@@ -1,4 +1,7 @@
-    .venv
-    
-    rlm/weights/*
-    !rlm/weights/.gitkeep
+.venv/
+
+# ignore everything under weights, recursively
+rlm/weights/**
+
+# but keep this one file
+!rlm/weights/.gitkeep
