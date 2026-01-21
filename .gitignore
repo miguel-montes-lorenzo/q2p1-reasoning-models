@@ -1,0 +1,4 @@
+    .venv
+    
+    rlm/weights/*
+    !rlm/weights/.gitkeep
