@@ -19,7 +19,7 @@ Completa el script `train_grpo.py`.
 * **Objetivo:** Mejorar la capacidad de razonamiento matemático usando recompensas verificables.
 * **Dataset:** Usa las preguntas de GSM8K (sin las respuestas en el prompt).
 * **Método (RLVF + GRPO):**
-  1. Para cada pregunta, genera N respuestas con sampling (temperatura > 0).
+  1. Para cada pregunta, genera N respuestas con sampling (temperatura < 1).
   2. Extrae la respuesta numérica final de cada una.
   3. Compara con la solución real. Recompensa = 1 si es correcta, 0 si no.
   4. Aplica la lógica de GRPO para actualizar los pesos basándote en la ventaja relativa de cada respuesta dentro de su grupo.

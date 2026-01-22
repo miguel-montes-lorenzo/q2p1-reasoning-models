@@ -1,0 +1,122 @@
+[
+  {
+    "question": "Si tienes 3 cajas con 4 bolas cada una y añades 2 bolas más a cada caja, ¿cuántas bolas hay en total?",
+    "answer": 18
+  },
+  {
+    "question": "Un número es el resultado de sumar 7 y luego multiplicar por 3, dando 30. ¿Cuál era el número inicial?",
+    "answer": 3
+  },
+  {
+    "question": "Un coche recorre 120 km en 2 horas y luego 240 km en 2 horas. ¿Cuál es su velocidad media en km/h?",
+    "answer": 90
+  },
+  {
+    "question": "En una clase hay el doble de alumnos que de alumnas. Si en total hay 36 estudiantes, ¿cuántas alumnas hay?",
+    "answer": 12
+  },
+  {
+    "question": "Un rectángulo tiene área 96 cm². Si un lado mide 8 cm, ¿cuánto mide el perímetro del rectángulo?",
+    "answer": 40
+  },
+  {
+    "question": "Un reloj se adelanta 5 minutos cada hora. Tras 6 horas reales, ¿cuántos minutos de adelanto lleva?",
+    "answer": 30
+  },
+  {
+    "question": "Tres números consecutivos suman 123. ¿Cuál es el mayor?",
+    "answer": 42
+  },
+  {
+    "question": "Un producto cuesta 100. Se rebaja un 20% y luego se incrementa un 20%. ¿Cuál es el precio final?",
+    "answer": 96
+  },
+  {
+    "question": "Un número deja resto 1 al dividirlo entre 3 y resto 3 al dividirlo entre 5. ¿Cuál es el menor número positivo que cumple esto?",
+    "answer": 13
+  },
+  {
+    "question": "Ana está en la posición 10 desde la izquierda y 7 desde la derecha en una fila. ¿Cuántas personas hay en total?",
+    "answer": 16
+  },
+  {
+    "question": "Un depósito se llena con dos grifos: uno tarda 6 h y otro 12 h. Si ambos funcionan 2 h, ¿qué fracción del depósito se ha llenado expresada como numerador?",
+    "answer": 1
+  },
+  {
+    "question": "Si hoy es lunes, ¿cuántos días faltan para que vuelva a ser lunes?",
+    "answer": 7
+  },
+  {
+    "question": "Un número cumple que (2x + 5) / 3 = 11. ¿Cuál es x?",
+    "answer": 14
+  },
+  {
+    "question": "Un examen tiene 10 preguntas. Cada acierto suma 3 y cada fallo resta 1. Si la nota final es 14, ¿cuántos aciertos hubo?",
+    "answer": 6
+  },
+  {
+    "question": "En una habitación se encienden dos bombillas durante un tiempo y luego se apaga una. Al entrar, ¿cuántas bombillas están calientes?",
+    "answer": 2
+  },
+  {
+    "question": "Si A implica B y B es falso, ¿cuántos valores posibles tiene A que cumplen la implicación?",
+    "answer": 1
+  },
+  {
+    "question": "¿Cuál es el menor número mayor que 1 que tiene exactamente tres divisores positivos?",
+    "answer": 4
+  },
+  {
+    "question": "Hay el doble de bolas rojas que azules y 3 verdes más que rojas. En total hay 27 bolas. ¿Cuántas verdes hay?",
+    "answer": 12
+  },
+  {
+    "question": "Un test tiene 4 opciones y solo una es correcta. Si se eliminan 2 incorrectas al azar, ¿cuántas opciones quedan?",
+    "answer": 2
+  },
+  {
+    "question": "El número binario 101101 corresponde a qué número en base 10?",
+    "answer": 45
+  },
+  {
+    "question": "La suma de los primeros n números naturales es 210. ¿Cuál es n?",
+    "answer": 20
+  },
+  {
+    "question": "Un número es múltiplo de 4 y de 6, y es menor que 50. ¿Cuál es el mayor posible?",
+    "answer": 48
+  },
+  {
+    "question": "¿Cuántos números primos hay menores que 30?",
+    "answer": 10
+  },
+  {
+    "question": "Un número x cumple que x ≡ 2 (mod 5) y x ≡ 1 (mod 3). ¿Cuál es el menor x positivo?",
+    "answer": 7
+  },
+  {
+    "question": "¿Cuántos subconjuntos distintos tiene un conjunto con 6 elementos?",
+    "answer": 64
+  },
+  {
+    "question": "La suma de los dígitos de un número de dos cifras es 11 y la cifra de las decenas es el doble que la de las unidades. ¿Cuál es el número?",
+    "answer": 74
+  },
+  {
+    "question": "Un número natural n cumple que n² − 5n + 6 = 0. ¿Cuál es el mayor valor posible de n?",
+    "answer": 3
+  },
+  {
+    "question": "¿Cuántos divisores positivos tiene el número 360?",
+    "answer": 24
+  },
+  {
+    "question": "La suma de todos los múltiplos de 7 menores que 100 es igual a:",
+    "answer": 735
+  },
+  {
+    "question": "Un número tiene exactamente 9 divisores positivos. ¿Cuál es el menor número que cumple esto?",
+    "answer": 36
+  }
+]

@@ -12,7 +12,7 @@ from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import SFTConfig, SFTTrainer
 
-from config import CONFIG
+from config import SFT_CONFIG as CONFIG
 
 
 def _parse_gsm8k_answer(*, answer_field: str) -> tuple[str, str]:
@@ -161,7 +161,7 @@ def train() -> None:
 
     # 6. Training configuration
     sft_args: SFTConfig = SFTConfig(
-        output_dir=str(cfg.output_dir),
+        output_dir=str(cfg.checkpoint_directory),
         num_train_epochs=int(cfg.epochs),
         per_device_train_batch_size=int(cfg.batch_size_questions),
         gradient_accumulation_steps=2,
@@ -169,9 +169,9 @@ def train() -> None:
         # Minimal fix: disable fp16 to avoid GradScaler, enable bf16 instead.
         fp16=False,
         bf16=True,
-        logging_steps=10,
-        save_steps=200,
-        save_total_limit=2,
+        logging_steps=cfg.loogging_interval,
+        save_steps=cfg.checkpoint_interval,
+        save_total_limit=cfg.keep_last_checkpoints,
         report_to="none",
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
@@ -195,8 +195,8 @@ def train() -> None:
 
     # 8. Train and save artifacts
     trainer.train()
-    trainer.save_model(output_dir=str(cfg.output_dir))
-    tokenizer.save_pretrained(save_directory=str(cfg.output_dir))
+    trainer.save_model(output_dir=str(cfg.checkpoint_directory))
+    tokenizer.save_pretrained(save_directory=str(cfg.checkpoint_directory))
 
 
 if __name__ == "__main__":
