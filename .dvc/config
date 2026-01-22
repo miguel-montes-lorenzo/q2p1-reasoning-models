@@ -1,0 +1,3 @@
+['remote "origin"']
+    url = s3://dvc
+    endpointurl = https://dagshub.com/miguel-montes-lorenzo/q2p1-reasoning-models.s3
