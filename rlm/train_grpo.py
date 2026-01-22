@@ -550,15 +550,25 @@ def main(*, adapter_path: Path | None = None) -> None:
             avg_acc: float = float(sum(acc_buf) / max(len(acc_buf), 1))
             lr: float = _get_learning_rate(optimizer=optimizer)
 
+            pbar.set_postfix(
+                {
+                    "loss": f"{avg_loss:.4f}",
+                    "r_mean": f"{avg_r_mean:.3f}",
+                    "acc": f"{avg_acc:.3f}",
+                    "r_std": f"{avg_r_std:.3f}",
+                    "lr": f"{lr:.2e}",
+                }
+            )
+
             if logging_interval > 0 and step % logging_interval == 0:
-                pbar.set_postfix(
-                    {
-                        "loss": f"{avg_loss:.4f}",
-                        "r_mean": f"{avg_r_mean:.3f}",
-                        "acc": f"{avg_acc:.3f}",
-                        "r_std": f"{avg_r_std:.3f}",
-                        "lr": f"{lr:.2e}",
-                    }
+                print()
+                print(
+                    f"[step={step + 1}] "
+                    f"loss: {avg_loss:.4f}, "
+                    f": {avg_r_mean:.3f}, "
+                    f"acc: {avg_acc:.3f}, "
+                    f": {avg_r_std:.3f}, "
+                    f"lr: {lr:.2e}, "
                 )
 
             if checkpoint_interval > 0 and step % checkpoint_interval == 0:

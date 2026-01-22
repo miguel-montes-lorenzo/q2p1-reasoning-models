@@ -135,38 +135,6 @@ class GRPO_CONFIG:
         keep_last_checkpoints: Maximum number of recent checkpoints to retain.
     """
 
-    # model_name: str = MODEL_NAME
-    # dataset_name: str = DATASET_NAME
-    # dataset_config: str = DATASET_CONFIG
-
-    # use_4bit: bool = USE_4_BIT
-    # max_seq_len: int = MAX_SEQ_LEN
-
-    # system_prompt: str = SYSTEM_PROMPT
-
-    # # Generation hyperparameters (check script)
-    # do_sample: bool = True
-    # max_new_tokens: int = MAX_NEW_TOKENS
-    # temperature: float | None = TEMPERATURE if do_sample else None
-    # top_p: float | None = TOP_P if do_sample else None
-
-    # # Training hyperparameters (GRPO)
-    # epochs: int = 1
-    # lr: float = 2e-4
-    # batch_size_questions: int = 1  # 4
-    # group_size: int = 4
-    # max_train_examples: int | None = 2_000
-    # grad_accum_steps: int = 1
-    # clip_grad_norm: float = 1.0
-
-    # # Training Management
-    # loogging_interval: int = 25
-    # checkpoint_directory: Path = Path("./weights/final_rlm_lora")
-    # checkpoint_interval: int = 200
-    # keep_last_checkpoints: int = 2
-
-
-
     model_name: str = MODEL_NAME
     dataset_name: str = DATASET_NAME
     dataset_config: str = DATASET_CONFIG

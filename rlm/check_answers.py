@@ -595,7 +595,7 @@ if __name__ == "__main__":
     if adapters is None:
         adapters = [
             Path("weights/sft_lora/best-checkpoint"),
-            Path("weights/final_rlm_lora/best-checkpoint"),
+            Path("weights/final_rlm_lora/best-checkpoint-600"),
         ]
     if questions is None:
         questions = Path("./QA/questions.json")
