@@ -7,7 +7,8 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 # Ruta a tu modelo final de fase 1
-MODEL_PATH: str = "./weights/final_rlm_lora"
+# MODEL_PATH: str = "./weights/final_rlm_lora"
+MODEL_PATH: str = "/app/rlm/weights/final_rlm_lora"
 BASE_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
 
 USE_4BIT: bool = True
@@ -41,7 +42,7 @@ def load_rlm_model() -> tuple[torch.nn.Module, AutoTokenizer]:
     base_model = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=BASE_MODEL,
         quantization_config=bnb_config,
-        torch_dtype=torch.float16,
+        dtype=torch.float16,
         device_map="auto",
     )
     model = PeftModel.from_pretrained(model=base_model, model_id=MODEL_PATH)

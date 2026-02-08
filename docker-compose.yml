@@ -1,0 +1,50 @@
+services:
+  fine-tune-mgp-g6:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fine-tune-mgp-g6
+    image: fine-tune-mgp-g6:latest
+
+    # GPU support (using runtime for compatibility)
+    runtime: nvidia
+
+    # Environment variables
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # CUDA_VISIBLE_DEVICES will be set automatically by docker-entrypoint.sh
+      # based on GPU with highest available memory
+      - PYTHONUNBUFFERED=1
+
+      # HuggingFace cache
+      - HF_HOME=/app/.cache/huggingface
+      - TRANSFORMERS_CACHE=/app/.cache/huggingface
+
+      # Paths de modelos (como en tu compose original)
+      - SFT_MODEL_PATH=/app/rlm/weights/sft_lora
+      - FINAL_MODEL_PATH=/app/weights/final_rlm_lora
+
+      # Lib path (como tu base)
+      - LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda-12.8/lib64:/usr/lib/x86_64-linux-gnu
+
+    # Working directory
+    working_dir: /app
+
+    # Volúmenes (unificados)
+    volumes:
+      - ./rlm/weights:/app/rlm/weights
+      - ./weights:/app/weights
+      - ./hf_cache:/app/.cache/huggingface
+
+    # Keep container running
+    stdin_open: true
+    tty: true
+
+    command: bash
+
+    # Network mode
+    network_mode: bridge
+
+    # Restart policy
+    restart: unless-stopped
