@@ -60,7 +60,7 @@ async def phase1_endpoint(request: QueryRequest):
         return {"response": "ERROR: Modelo de Fase 1 no cargado.", "details": {"status": "todo"}}
     
     # Usar la función de inferencia de Fase 1
-    response_text = generate_reasoning(request.prompt, MODEL, TOKENIZER)
+    response_text = generate_reasoning(prompt=request.prompt, model=MODEL, tokenizer=TOKENIZER)
     return {
         "response": response_text, "trace": [{"step": 0, "content": response_text}], "details": {"stage": "sft_grpo"}
     }
