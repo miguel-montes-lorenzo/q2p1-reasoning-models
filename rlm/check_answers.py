@@ -1,4 +1,4 @@
-# check_sft.py
+# check_answers.py
 
 from __future__ import annotations
 
@@ -10,11 +10,10 @@ from pathlib import Path
 from typing import Any, cast
 
 import torch
+from config import SFT_CONFIG as CONFIG
 from peft import PeftModel
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-from config import SFT_CONFIG as CONFIG
 
 
 @dataclass(frozen=True)
@@ -237,6 +236,25 @@ def _generate(
     return tokenizer.decode(gen_ids, skip_special_tokens=True)
 
 
+def _extract_answer_section(*, text: str) -> str:
+    """Extract the content inside the <answer>...</answer> section.
+
+    Args:
+        text: Model completion text.
+
+    Returns:
+        The extracted answer content if tags are found, otherwise the original text.
+    """
+    m: re.Match[str] | None = re.search(
+        pattern=r"<answer>\s*(.*?)\s*</answer>",
+        string=text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if m is None:
+        return text
+    return m.group(1).strip()
+
+
 def _extract_last_digit_run(*, text: str) -> str:
     """Extract the last consecutive run of digits from a string.
 
@@ -336,7 +354,7 @@ def _print_answer_table(
             parts.append(f"{item:<{w}}")
         return " | ".join(parts)
 
-    sep: str = "-+-".join(("-" * w for w in widths))
+    sep: str = "-+-".join("-" * w for w in widths)
 
     print("\n=== SUMMARY TABLE ===")
     print(_fmt_row(items=headers))
@@ -352,7 +370,7 @@ def _print_answer_table(
     ]
 
     acc_cells: list[str] = ["acc", "", f"{base_acc:>4.2f}"]
-    acc_cells.extend((f"{a:>4.2f}" for a in adapter_accs))
+    acc_cells.extend(f"{a:>4.2f}" for a in adapter_accs)
 
     print(sep)
     print(_fmt_row(items=acc_cells))
@@ -384,7 +402,9 @@ def _load_questions(*, questions_path: Path) -> list[QAItem]:
 
         q_any: Any = item.get("question")
         if not isinstance(q_any, str) or not q_any.strip():
-            raise ValueError(f"Questions[{idx}]['question'] must be a non-empty string.")
+            raise ValueError(
+                f"Questions[{idx}]['question'] must be a non-empty string."
+            )
         question: str = q_any.strip()
 
         a_any: Any = item.get("answer")
@@ -497,7 +517,8 @@ def main(
             cfg=cfg,
         )
         base_outputs.append(base_out)
-        base_pred.append(_extract_last_digit_run(text=base_out))
+        base_ans: str = _extract_answer_section(text=base_out)
+        base_pred.append(_extract_last_digit_run(text=base_ans))
 
         for j, model in enumerate(adapted_models):
             out: str = _generate(
@@ -507,7 +528,8 @@ def main(
                 cfg=cfg,
             )
             adapter_outputs[j].append(out)
-            adapter_preds[j].append(_extract_last_digit_run(text=out))
+            ans: str = _extract_answer_section(text=out)
+            adapter_preds[j].append(_extract_last_digit_run(text=ans))
 
     _write_answers_json(
         answers_path=answers_path,
@@ -534,7 +556,8 @@ def _parse_optional_path_from_argv(
     """Parse optional adapters/questions/answers paths from argv.
 
     Usage:
-        python check_sft.py [adapter_path_1 ... adapter_path_n] [--questions Q] [--answers A]
+        python check_sft.py [adapter_path_1 ... adapter_path_n] [--questions Q]
+            [--answers A]
 
     Notes:
         All positional args are treated as adapter paths, except when the
@@ -594,8 +617,9 @@ if __name__ == "__main__":
 
     if adapters is None:
         adapters = [
+            # Path("weights/sft_lora/best-checkpoint"),
             Path("weights/sft_lora/best-checkpoint"),
-            Path("weights/final_rlm_lora/best-checkpoint-600"),
+            # Path("weights/final_rlm_lora/best-checkpoint-600"),
         ]
     if questions is None:
         questions = Path("./QA/questions.json")

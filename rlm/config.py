@@ -9,11 +9,32 @@ MODEL_NAME: str = "Qwen/Qwen2.5-7B-Instruct"
 DATASET_NAME: str = "gsm8k"
 DATASET_CONFIG: str = "main"
 
+
 SYSTEM_PROMPT: str = (
-        "You are a helpful math tutor. Solve the problem step by step. "
-        "Put your reasoning inside <think>...</think>. "
-        "Then provide the final answer clearly and concisely."
-    )
+    "ROL:\n"
+    "- You are a helpful math tutor. Solve the problem step by step.\n"
+    "\n"
+    "FORMAT:\n"
+    "- The response will be structured in sections.\n"
+    "- Each section will begin with an opening tag `<section_name>`.\n"
+    "- Each section will conclude with a closing tag `</section_name>`.\n"
+    "- All content will be written between the opening and closing tags of a section.\n"
+    "- No content will be written outside these tags.\n"
+    "- No nested sections will be created, only sequential ones.\n"
+    "- The response must contain the following clearly differentiated sections (in this "
+    "order):\n"
+    "    - think\n"
+    "    - answer\n"
+    "- The response must begin with the opening tag of the think section: `<think>`.\n"
+    "- The response must end with the closing tag of the answer section: `</answer>`.\n"
+    "\n"
+    "CONTENT:\n"
+    "- The think section will contain the reasoning required to arrive at the solution "
+    "- to the posed question.\n"
+    "- The answer section will contain a single minimal value that will be validated "
+    "as a possible response to the question (a number, a letter, a fraction, ...).\n"
+)
+
 
 USE_4_BIT: bool = True
 MAX_SEQ_LEN: int = 1024

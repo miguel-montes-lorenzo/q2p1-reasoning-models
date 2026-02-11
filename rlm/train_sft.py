@@ -7,12 +7,11 @@ from functools import partial
 from typing import Any
 
 import torch
+from config import SFT_CONFIG as CONFIG
 from datasets import Dataset, load_dataset
 from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import SFTConfig, SFTTrainer
-
-from config import SFT_CONFIG as CONFIG
 
 
 def _parse_gsm8k_answer(*, answer_field: str) -> tuple[str, str]:
@@ -48,9 +47,9 @@ def formatting_prompts_func(
     This emits a ChatML-style conversation with:
       system -> user -> assistant
 
-    The assistant message includes:
-      <think>reasoning</think>
-      final_answer
+    The assistant message follows the required sectioned format:
+      <think>...</think>
+      <answer>...</answer>
 
     Args:
         example: Dataset example containing at least "question" and "answer".
@@ -64,7 +63,10 @@ def formatting_prompts_func(
     answer_field: str = str(example["answer"])
     reasoning, final_answer = _parse_gsm8k_answer(answer_field=answer_field)
 
-    assistant_text: str = f"<think>{reasoning}</think>\n{final_answer}".strip()
+    # New required format: no content outside <think> and <answer>.
+    assistant_text: str = (
+        f"<think>{reasoning}</think>\n<answer>{final_answer}</answer>"
+    ).strip()
 
     messages: list[dict[str, str]] = [
         {"role": "system", "content": cfg.system_prompt},
@@ -181,7 +183,9 @@ def train() -> None:
         packing=False,
     )
 
-    formatting_func: Any = partial(formatting_prompts_func, tokenizer=tokenizer, cfg=cfg)
+    formatting_func: Any = partial(
+        formatting_prompts_func, tokenizer=tokenizer, cfg=cfg
+    )
 
     # 7. Initialize trainer
     trainer: SFTTrainer = SFTTrainer(

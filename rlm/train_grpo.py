@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import re
 import sys
+import zlib
 from pathlib import Path
 from typing import Any
 
 import torch
+from config import GRPO_CONFIG
 from datasets import Dataset, load_dataset
 from peft import (
     LoraConfig,
@@ -19,11 +21,16 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-from config import GRPO_CONFIG
-
 
 def _parse_gsm8k_answer(*, answer_field: str) -> tuple[str, str]:
-    """Parse GSM8K 'answer' field into (reasoning, final_answer)."""
+    """Parse GSM8K 'answer' field into (reasoning, final_answer).
+
+    Args:
+        answer_field: Raw GSM8K answer string.
+
+    Returns:
+        A tuple (reasoning, final_answer). If parsing fails, final_answer is "".
+    """
     if "####" in answer_field:
         parts: list[str] = answer_field.split("####", maxsplit=1)
         reasoning: str = parts[0].strip()
@@ -33,7 +40,14 @@ def _parse_gsm8k_answer(*, answer_field: str) -> tuple[str, str]:
 
 
 def _build_bnb_config(*, use_4bit: bool) -> BitsAndBytesConfig | None:
-    """Create a BitsAndBytes quantization config."""
+    """Create a BitsAndBytes quantization config.
+
+    Args:
+        use_4bit: Whether to enable 4-bit NF4 quantization.
+
+    Returns:
+        A BitsAndBytesConfig if enabled, else None.
+    """
     if not use_4bit:
         return None
     return BitsAndBytesConfig(
@@ -44,8 +58,195 @@ def _build_bnb_config(*, use_4bit: bool) -> BitsAndBytesConfig | None:
     )
 
 
+def _extract_tag_content(*, text: str, tag: str) -> str | None:
+    """Extract inner content of a tag like <tag>...</tag>.
+
+    Args:
+        text: Full model completion.
+        tag: Tag name without brackets (e.g., "think", "answer").
+
+    Returns:
+        Inner content if found, else None.
+    """
+    m: re.Match[str] | None = re.search(
+        pattern=rf"<{tag}>\s*(.*?)\s*</{tag}>",
+        string=text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    if m is None:
+        return None
+    return m.group(1).strip()
+
+
+def _has_think_block(*, text: str) -> bool:
+    """Return True if <think>...</think> exists."""
+    return (
+        re.search(
+            pattern=r"<think>\s*.*?\s*</think>",
+            string=text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _has_answer_block(*, text: str) -> bool:
+    """Return True if <answer>...</answer> exists."""
+    return (
+        re.search(
+            pattern=r"<answer>\s*.*?\s*</answer>",
+            string=text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _tags_in_strict_order(*, text: str) -> bool:
+    """Return True if tags appear as <think> </think> <answer> </answer> in order."""
+    lower: str = text.lower()
+    idx_t0: int = lower.find("<think>")
+    idx_t1: int = lower.find("</think>")
+    idx_a0: int = lower.find("<answer>")
+    idx_a1: int = lower.find("</answer>")
+
+    if min(idx_t0, idx_t1, idx_a0, idx_a1) < 0:
+        return False
+    return idx_t0 < idx_t1 < idx_a0 < idx_a1
+
+
+def _no_text_outside_tags(*, text: str) -> bool:
+    """Return True if only <think>...</think><answer>...</answer> (plus whitespace)."""
+    lower: str = text.lower()
+
+    think_block: re.Match[str] | None = re.search(
+        pattern=r"<think>\s*.*?\s*</think>",
+        string=lower,
+        flags=re.DOTALL,
+    )
+    tmp: str = lower
+    if think_block is not None:
+        tmp = tmp[: think_block.start()] + tmp[think_block.end() :]
+
+    answer_block: re.Match[str] | None = re.search(
+        pattern=r"<answer>\s*.*?\s*</answer>",
+        string=tmp,
+        flags=re.DOTALL,
+    )
+    if answer_block is not None:
+        tmp = tmp[: answer_block.start()] + tmp[answer_block.end() :]
+
+    return tmp.strip() == ""
+
+
+def _len_ratio_score(*, think_text: str | None, answer_text: str | None) -> float:
+    """Compute len(think) / (len(think) + len(answer)) in [0,1].
+
+    Args:
+        think_text: Extracted think content.
+        answer_text: Extracted answer content.
+
+    Returns:
+        Ratio in [0,1]. Returns 0.0 if missing or denominator is 0.
+    """
+    if think_text is None or answer_text is None:
+        return 0.0
+    lt: int = len(think_text)
+    la: int = len(answer_text)
+    denom: int = lt + la
+    if denom <= 0:
+        return 0.0
+    return float(lt) / float(denom)
+
+
+def _naturalness_score(*, text: str) -> float:
+    """Heuristic naturalness score in [0, 1] for reasoning text.
+
+    This is a fast proxy to penalize low-information padding and repetitions.
+
+    Signals:
+      - Compression ratio (zlib): repetitive text compresses better -> lower score.
+      - Lexical diversity: unique words / total words.
+      - Repetition penalty: common n-gram repetitions and long character runs.
+
+    Args:
+        text: The reasoning text (ideally content inside <think>...</think>).
+
+    Returns:
+        Score in [0,1].
+    """
+    s: str = text.strip()
+    if not s:
+        return 0.0
+
+    b: bytes = s.encode("utf-8", errors="ignore")
+    if len(b) == 0:
+        return 0.0
+
+    comp: bytes = zlib.compress(b, level=6)
+    comp_ratio: float = float(len(comp)) / float(len(b))
+    comp_norm: float = (comp_ratio - 0.20) / (1.00 - 0.20)
+    comp_norm = max(0.0, min(1.0, comp_norm))
+
+    words: list[str] = re.findall(pattern=r"[A-Za-z0-9_]+", string=s.lower())
+    if not words:
+        diversity: float = 0.0
+    else:
+        diversity = float(len(set(words))) / float(len(words))
+
+    max_run: int = 1
+    run: int = 1
+    for i in range(1, len(s)):
+        if s[i] == s[i - 1]:
+            run += 1
+            if run > max_run:
+                max_run = run
+        else:
+            run = 1
+
+    run_penalty: float = 0.0
+    if max_run >= 12:
+        run_penalty = 0.50
+    elif max_run >= 8:
+        run_penalty = 0.25
+    elif max_run >= 6:
+        run_penalty = 0.10
+
+    bigrams: list[tuple[str, str]] = []
+    if len(words) >= 2:
+        bigrams = list(zip(words[:-1], words[1:], strict=True))
+
+    if not bigrams:
+        rep_penalty: float = 0.0
+    else:
+        counts: dict[tuple[str, str], int] = {}
+        for bg in bigrams:
+            counts[bg] = counts.get(bg, 0) + 1
+        most_common: int = max(counts.values())
+        rep_frac: float = float(most_common) / float(len(bigrams))
+
+        rep_penalty = 0.0
+        if rep_frac >= 0.35:
+            rep_penalty = 0.50
+        elif rep_frac >= 0.25:
+            rep_penalty = 0.25
+        elif rep_frac >= 0.18:
+            rep_penalty = 0.10
+
+    base: float = 0.55 * comp_norm + 0.45 * diversity
+    score: float = base * (1.0 - run_penalty) * (1.0 - rep_penalty)
+    return max(0.0, min(1.0, score))
+
+
 def _extract_final_int(*, text: str) -> int | None:
-    """Extract the last integer substring from text."""
+    """Extract the last integer substring from text.
+
+    Args:
+        text: Input string.
+
+    Returns:
+        Last parsed integer if any, else None.
+    """
     matches: list[str] = re.findall(pattern=r"[-+]?\d+", string=text)
     if not matches:
         return None
@@ -56,44 +257,124 @@ def _extract_final_int(*, text: str) -> int | None:
 
 
 def reward_function(*, generated_text: str, ground_truth_answer: str) -> float:
-    """Compute a verifiable {0,1} reward for GSM8K-style answers."""
-    pred: int | None = _extract_final_int(text=generated_text)
+    """Compute a shaped reward for GSM8K with formatting + naturalness bonuses.
+
+    Rewards:
+      +0.50 correct final answer
+      +0.25 structure compliance (sum of subparts):
+        +0.05 has <think>...</think>
+        +0.05 has <answer>...</answer>
+        +0.05 no text outside tag scopes
+        +0.10 tags appear in strict order:
+              <think> -> </think> -> <answer> -> </answer>
+      +0.10 length ratio:
+        len(think) / (len(think) + len(answer))
+      +0.15 naturalness heuristic score on think content
+
+    Args:
+        generated_text: Model completion (generated continuation).
+        ground_truth_answer: GSM8K ground-truth answer field (with #### marker).
+
+    Returns:
+        Total reward in [0, 1] (clamped).
+    """
+    reward: float = 0.0
+
+    think_text: str | None = _extract_tag_content(text=generated_text, tag="think")
+    answer_text: str | None = _extract_tag_content(text=generated_text, tag="answer")
+
+    pred: int | None
+    if answer_text is not None:
+        pred = _extract_final_int(text=answer_text)
+    else:
+        pred = _extract_final_int(text=generated_text)
+
     _, gt_final_str = _parse_gsm8k_answer(answer_field=ground_truth_answer)
     gt: int | None = _extract_final_int(text=gt_final_str)
-    if pred is None or gt is None:
-        return 0.0
-    return 1.0 if pred == gt else 0.0
+
+    if pred is not None and gt is not None and pred == gt:
+        reward += 0.50
+
+    has_think: bool = _has_think_block(text=generated_text)
+    has_answer: bool = _has_answer_block(text=generated_text)
+
+    if has_think:
+        reward += 0.05
+    if has_answer:
+        reward += 0.05
+    if has_think and has_answer and _no_text_outside_tags(text=generated_text):
+        reward += 0.05
+    if _tags_in_strict_order(text=generated_text):
+        reward += 0.10
+
+    reward += 0.10 * _len_ratio_score(think_text=think_text, answer_text=answer_text)
+
+    nat_input: str = think_text if think_text is not None else generated_text
+    reward += 0.15 * _naturalness_score(text=nat_input)
+
+    return float(max(0.0, min(1.0, reward)))
 
 
 def _build_prompt_text(*, tokenizer: Any, cfg: GRPO_CONFIG, question: str) -> str:
-    """Build a chat-template prompt for GSM8K question-only training."""
+    """Build a chat-template prompt for GSM8K question-only training.
+
+    Args:
+        tokenizer: HF tokenizer.
+        cfg: GRPO configuration.
+        question: GSM8K question string.
+
+    Returns:
+        Rendered prompt string.
+    """
     messages: list[dict[str, str]] = [
         {"role": "system", "content": cfg.system_prompt},
         {"role": "user", "content": question},
     ]
-    return tokenizer.apply_chat_template(
+    prompt: str = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=True,
     )
+    return f"{prompt}<think>"
 
 
 def _safe_std(*, x: torch.Tensor) -> torch.Tensor:
-    """Compute std with a safe fallback for small/constant tensors."""
+    """Compute std with a safe fallback for small/constant tensors.
+
+    Args:
+        x: Input tensor.
+
+    Returns:
+        Standard deviation tensor.
+    """
     if int(x.numel()) <= 1:
         return torch.tensor(0.0, device=x.device, dtype=x.dtype)
     return x.std(unbiased=False)
 
 
 def _collate_grpo_batch(*, examples: list[dict[str, Any]]) -> dict[str, list[str]]:
-    """Collate function producing lists of questions and answers."""
+    """Collate function producing lists of questions and answers.
+
+    Args:
+        examples: Raw dataset examples.
+
+    Returns:
+        Dict with 'question' and 'answer' lists.
+    """
     questions: list[str] = [str(ex["question"]) for ex in examples]
     answers: list[str] = [str(ex["answer"]) for ex in examples]
     return {"question": questions, "answer": answers}
 
 
 def _load_train_dataset(*, cfg: GRPO_CONFIG) -> Dataset:
-    """Load GSM8K train split, optionally truncate."""
+    """Load GSM8K train split, optionally truncate.
+
+    Args:
+        cfg: GRPO configuration.
+
+    Returns:
+        Train dataset.
+    """
     raw: Any = load_dataset(path=cfg.dataset_name, name=cfg.dataset_config)
     ds: Dataset = raw["train"]
     if cfg.max_train_examples is not None and len(ds) > int(cfg.max_train_examples):
@@ -102,7 +383,14 @@ def _load_train_dataset(*, cfg: GRPO_CONFIG) -> Dataset:
 
 
 def _count_trainable_params(*, model: torch.nn.Module) -> tuple[int, int]:
-    """Count trainable and total parameters."""
+    """Count trainable and total parameters.
+
+    Args:
+        model: Torch model.
+
+    Returns:
+        (trainable_params, total_params).
+    """
     trainable: int = 0
     total: int = 0
     for p in model.parameters():
@@ -114,15 +402,29 @@ def _count_trainable_params(*, model: torch.nn.Module) -> tuple[int, int]:
 
 
 def _ensure_only_trainable_params(*, model: torch.nn.Module) -> None:
-    """Ensure that only LoRA adapter parameters are trainable."""
+    """Ensure that only LoRA adapter parameters are trainable.
+
+    Args:
+        model: Torch model.
+    """
     if not isinstance(model, PeftModel):
         return
     for name, param in model.named_parameters():
         param.requires_grad = bool("lora_" in name)
 
 
-def _maybe_wrap_with_lora(*, base_model: torch.nn.Module, cfg: GRPO_CONFIG) -> torch.nn.Module:
-    """Create a LoRA adapter on top of a base model."""
+def _maybe_wrap_with_lora(
+    *, base_model: torch.nn.Module, cfg: GRPO_CONFIG
+) -> torch.nn.Module:
+    """Create a LoRA adapter on top of a base model.
+
+    Args:
+        base_model: Base HF model.
+        cfg: GRPO configuration.
+
+    Returns:
+        PEFT-wrapped model.
+    """
     target_modules: list[str] = [
         "q_proj",
         "k_proj",
@@ -149,12 +451,23 @@ def _decode_generated_only(
     sequences: torch.Tensor,
     prompt_len: int,
 ) -> list[str]:
-    """Decode only the generated continuation (excluding the prompt tokens)."""
+    """Decode only the generated continuation (excluding the prompt tokens).
+
+    Args:
+        tokenizer: HF tokenizer.
+        sequences: Generated token ids [B, T].
+        prompt_len: Prompt length in tokens.
+
+    Returns:
+        List of decoded continuations per sequence.
+    """
     cont_ids: list[torch.Tensor] = []
     bsz: int = int(sequences.shape[0])
     for b in range(bsz):
         seq: torch.Tensor = sequences[b]
-        cont_ids.append(seq[int(prompt_len) :] if int(prompt_len) < int(seq.numel()) else seq[:0])
+        cont_ids.append(
+            seq[int(prompt_len) :] if int(prompt_len) < int(seq.numel()) else seq[:0]
+        )
     return tokenizer.batch_decode(cont_ids, skip_special_tokens=True)
 
 
@@ -184,10 +497,14 @@ def _gather_generated_logp_stats(
             gen_mask[start_tgt:] = True
         gen_mask = gen_mask & attn[b].to(dtype=torch.bool)
 
-        picked: torch.Tensor = log_probs_all[b].gather(
-            dim=-1,
-            index=target_tokens[b].unsqueeze(-1),
-        ).squeeze(-1)  # [T-1]
+        picked: torch.Tensor = (
+            log_probs_all[b]
+            .gather(
+                dim=-1,
+                index=target_tokens[b].unsqueeze(-1),
+            )
+            .squeeze(-1)
+        )  # [T-1]
 
         sums.append(picked[gen_mask].sum())
         counts.append(torch.tensor(int(gen_mask.sum().item()), device=input_ids.device))
@@ -197,7 +514,9 @@ def _gather_generated_logp_stats(
 
 def _parse_step_from_checkpoint_dirname(*, name: str) -> int | None:
     """Parse step number from a directory name like 'checkpoint-step-123'."""
-    m: re.Match[str] | None = re.fullmatch(pattern=r"checkpoint-step-(\d+)", string=name)
+    m: re.Match[str] | None = re.fullmatch(
+        pattern=r"checkpoint-step-(\d+)", string=name
+    )
     if m is None:
         return None
     return int(m.group(1))
@@ -277,14 +596,14 @@ def _load_base_and_policy(
         )
         base_model.config.use_cache = False
 
-    # Reference: base model without adapter (frozen)
     base_model.eval()
     for p in base_model.parameters():
         p.requires_grad = False
 
-    # Policy: base model + LoRA (trainable)
     if adapter_path is None:
-        policy_model: torch.nn.Module = _maybe_wrap_with_lora(base_model=base_model, cfg=cfg)
+        policy_model: torch.nn.Module = _maybe_wrap_with_lora(
+            base_model=base_model, cfg=cfg
+        )
     else:
         policy_model = PeftModel.from_pretrained(
             model=base_model,
@@ -377,7 +696,9 @@ def main(*, adapter_path: Path | None = None) -> None:
             batch_questions: list[str] = batch["question"]
             batch_answers: list[str] = batch["answer"]
 
-            total_loss: torch.Tensor = torch.tensor(0.0, device=device, dtype=torch.float32)
+            total_loss: torch.Tensor = torch.tensor(
+                0.0, device=device, dtype=torch.float32
+            )
             batch_rewards_all: list[float] = []
 
             for q, gt in zip(batch_questions, batch_answers, strict=True):
@@ -394,10 +715,12 @@ def main(*, adapter_path: Path | None = None) -> None:
                     max_length=int(cfg.max_seq_len),
                 )
 
-                prompt_input_ids: torch.Tensor = prompt_inputs["input_ids"].to(device=device)
-                prompt_attention_mask: torch.Tensor = prompt_inputs["attention_mask"].to(
+                prompt_input_ids: torch.Tensor = prompt_inputs["input_ids"].to(
                     device=device
                 )
+                prompt_attention_mask: torch.Tensor = prompt_inputs[
+                    "attention_mask"
+                ].to(device=device)
                 prompt_len: int = int(prompt_input_ids.shape[1])
 
                 gen_kwargs: dict[str, Any] = {
@@ -413,13 +736,11 @@ def main(*, adapter_path: Path | None = None) -> None:
                 if top_p is not None:
                     gen_kwargs["top_p"] = float(top_p)
 
-                # Generate under eval() to avoid dropout noise in sampled rollouts
                 policy_model.eval()
                 with torch.no_grad():
                     gen_ids: torch.Tensor = policy_model.generate(**gen_kwargs)
                 policy_model.train()
 
-                # Pad to a rectangle for batched logp computations
                 seq_lens: torch.Tensor = torch.tensor(
                     [int(s.shape[0]) for s in gen_ids],
                     device=gen_ids.device,
@@ -474,10 +795,11 @@ def main(*, adapter_path: Path | None = None) -> None:
                 )
                 mean_reward: torch.Tensor = rewards_tensor.mean()
                 std_reward: torch.Tensor = _safe_std(x=rewards_tensor)
-                advantages: torch.Tensor = (rewards_tensor - mean_reward) / (std_reward + 1e-8)
+                advantages: torch.Tensor = (rewards_tensor - mean_reward) / (
+                    std_reward + 1e-8
+                )
                 adv_detached: torch.Tensor = advantages.detach()
 
-                # Log-probs under policy and reference for the sampled actions
                 sum_logp_pi, n_gen = _gather_generated_logp_stats(
                     model=policy_model,
                     input_ids=group_input_ids,
@@ -492,14 +814,20 @@ def main(*, adapter_path: Path | None = None) -> None:
                         prompt_len=prompt_len,
                     )
 
-                n_gen_safe: torch.Tensor = torch.clamp(n_gen.to(dtype=torch.float32), min=1.0)
-                mean_logp_pi: torch.Tensor = sum_logp_pi.to(dtype=torch.float32) / n_gen_safe
-                mean_logp_ref: torch.Tensor = sum_logp_ref.to(dtype=torch.float32) / n_gen_safe
+                n_gen_safe: torch.Tensor = torch.clamp(
+                    n_gen.to(dtype=torch.float32), min=1.0
+                )
+                mean_logp_pi: torch.Tensor = (
+                    sum_logp_pi.to(dtype=torch.float32) / n_gen_safe
+                )
+                mean_logp_ref: torch.Tensor = (
+                    sum_logp_ref.to(dtype=torch.float32) / n_gen_safe
+                )
 
                 approx_kl: torch.Tensor = mean_logp_pi - mean_logp_ref
-                loss_q: torch.Tensor = -(adv_detached * mean_logp_pi).mean() + beta_kl * (
-                    approx_kl.mean()
-                )
+                loss_q: torch.Tensor = -(
+                    adv_detached * mean_logp_pi
+                ).mean() + beta_kl * (approx_kl.mean())
                 total_loss = total_loss + loss_q
 
             total_loss = total_loss / float(max(len(batch_questions), 1))
@@ -510,7 +838,9 @@ def main(*, adapter_path: Path | None = None) -> None:
 
             if step % int(grad_accum_steps) == 0:
                 torch.nn.utils.clip_grad_norm_(
-                    parameters=[p for p in policy_model.parameters() if bool(p.requires_grad)],
+                    parameters=[
+                        p for p in policy_model.parameters() if bool(p.requires_grad)
+                    ],
                     max_norm=float(clip_grad_norm),
                 )
                 optimizer.step()
@@ -527,7 +857,9 @@ def main(*, adapter_path: Path | None = None) -> None:
                     dtype=torch.float32,
                 )
                 reward_mean: float = float(rewards_step.mean().detach().cpu().item())
-                reward_std: float = float(_safe_std(x=rewards_step).detach().cpu().item())
+                reward_std: float = float(
+                    _safe_std(x=rewards_step).detach().cpu().item()
+                )
                 accuracy: float = reward_mean
             else:
                 reward_mean = 0.0
@@ -550,15 +882,13 @@ def main(*, adapter_path: Path | None = None) -> None:
             avg_acc: float = float(sum(acc_buf) / max(len(acc_buf), 1))
             lr: float = _get_learning_rate(optimizer=optimizer)
 
-            pbar.set_postfix(
-                {
-                    "loss": f"{avg_loss:.4f}",
-                    "r_mean": f"{avg_r_mean:.3f}",
-                    "acc": f"{avg_acc:.3f}",
-                    "r_std": f"{avg_r_std:.3f}",
-                    "lr": f"{lr:.2e}",
-                }
-            )
+            pbar.set_postfix({
+                "loss": f"{avg_loss:.4f}",
+                "r_mean": f"{avg_r_mean:.3f}",
+                "acc": f"{avg_acc:.3f}",
+                "r_std": f"{avg_r_std:.3f}",
+                "lr": f"{lr:.2e}",
+            })
 
             if logging_interval > 0 and step % logging_interval == 0:
                 print()
@@ -602,7 +932,6 @@ def _parse_optional_checkpoint_arg(*, argv: list[str]) -> Path | None:
 if __name__ == "__main__":
     path: Path | None = _parse_optional_checkpoint_arg(argv=sys.argv)
 
-    # default_best: Path = Path("weights/final_rlm_lora/checkpoint-step-200")
     default_best: Path = Path("weights/sft_lora/best-checkpoint")
     if path is None and default_best.exists():
         path = default_best
