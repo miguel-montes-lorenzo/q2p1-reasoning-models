@@ -12,7 +12,7 @@ PORT = 8182
 # --- IMPORTACIONES DE LOS MÓDULOS DE LOS ALUMNOS ---
 # TODO: Descomentar a medida que se implementen las fases
 from rlm.inference import load_rlm_model, generate_reasoning
-# from tool_use.tool_handler import parse_and_execute_tool_call
+from tool_use.tool_handler import parse_and_execute_tool_call, SYSTEM_PROMPT_TOOLS
 # from rag.rag_engine import retrieve_context, format_rag_prompt
 # from react.agent import ReActAgent
 
@@ -80,12 +80,65 @@ async def phase2_endpoint(request: QueryRequest):
     # TODO: Descomentar
     # tool_result = parse_and_execute_tool_call(model_output_simulated)
 
-    tool_result = "Placeholder: Resultado de herramienta (Fase 2) no implementado."
+    # tool_result = "Placeholder: Resultado de herramienta (Fase 2) no implementado."
     
-    if tool_result:
-        return {"response": f"Tool execution result: {tool_result}", "details": {"tool_called": True}}
-    else:
-        return {"response": "No tool call detected or needed.", "details": {"tool_called": False}}
+    # if tool_result:
+    #     return {"response": f"Tool execution result: {tool_result}", "details": {"tool_called": True}}
+    # else:
+    #     return {"response": "No tool call detected or needed.", "details": {"tool_called": False}}
+
+
+    # 1. Verificar que tu modelo local está cargado (reusamos el de la Fase 1)
+    if not MODEL or not TOKENIZER:
+        return {
+            "response": "ERROR: El modelo propio (MODEL/TOKENIZER) no está cargado.", 
+            "details": {"status": "error_model_not_loaded"}
+        }
+
+    try:
+        # 2. Construir el Prompt Final
+        # Concatenamos las instrucciones de herramientas con la pregunta del usuario.
+        # ADAPTALO: Si tu modelo usa un formato especial (ej: <|system|>, [INST], etc.), añádelo aquí.
+        
+        final_prompt = None # Poner el promt de Miguel
+
+        # 3. Generar respuesta con tu modelo local
+        # Usamos la misma función de inferencia que en la Fase 1
+        # Asegúrate de que generate_reasoning acepte el string completo
+        raw_content = generate_reasoning(prompt=final_prompt, model=MODEL, tokenizer=TOKENIZER)
+
+        # 4. Lógica de Herramientas (Parsing y Ejecución)
+        # Tu handler busca el bloque JSON en 'raw_content'
+        execution_data = parse_and_execute_tool_call(raw_content)
+
+        # 5. Construir respuesta (Trace y Details)
+        trace_data = [
+            {"step": 0, "content": raw_content} # Lo que generó tu modelo (debería ser el JSON)
+        ]
+        
+        final_response = execution_data["result"]
+        was_tool_used = execution_data["executed"]
+
+        if was_tool_used:
+            trace_data.append({"step": 1, "content": f"Resultado Herramienta: {final_response}"})
+            # Opcional: Podrías volver a invocar al modelo aquí pasándole el resultado para que redacte una frase final.
+        
+        return {
+            "response": final_response, # Devuelve el resultado de la herramienta o el texto generado
+            "trace": trace_data,
+            "details": {
+                "tool_called": was_tool_used,
+                "stage": "tool_use_local_model",
+                "model_used": "Custom Local Model"
+            }
+        }
+
+    except Exception as e:
+        return {
+            "response": f"Error en Fase 2 (Modelo Propio): {str(e)}", 
+            "trace": [],
+            "details": {"error": str(e)}
+        }
 
 
 # --- FASE 3: RAG ---

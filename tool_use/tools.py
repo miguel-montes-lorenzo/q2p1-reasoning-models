@@ -1,13 +1,9 @@
-# --- Implementación de las herramientas ---
-
 import os
-
+import requests
 from dotenv import load_dotenv
-from langchain.agents import create_agent
 from langchain.tools import tool
-from langchain_openai import AzureChatOpenAI
 
-load_dotenv()  # Intenta cargar desde el directorio de trabajo actual
+load_dotenv()
 
 """
 otras opciones para agentes:
@@ -22,13 +18,15 @@ otras opciones para agentes:
 
 @tool
 def calculator(expression: str) -> str:
-    """Evalúa una expresión matemática simple. Útil para realizar cálculos aritméticos."""
+    """Evalúa una expresión matemática simple."""
     try:
-        # Idealmente, usar una librería segura como numexpr o asteval.
+        # Por seguridad, limitamos caracteres
+        allowed = set("0123456789+-*/(). ")
+        if not set(expression).issubset(allowed):
+            return "Error: Caracteres no permitidos."
         return str(eval(expression))
     except Exception as e:
         return f"Error calculando: {e}"
-
 
 @tool
 def simulated_search(query: str) -> str:
@@ -43,66 +41,71 @@ def simulated_search(query: str) -> str:
     else:
         return "No se encontraron resultados relevantes en el buscador simulado."
 
+@tool
+def get_book_info(title: str) -> str:
+    """
+    API PÚBLICA (Temática Equipo: Libros).
+    Usa Open Library para buscar información.
+    """
+    try:
+        url = f"https://openlibrary.org/search.json?q={title.replace(' ', '+')}"
+        resp = requests.get(url)
+        data = resp.json()
+        if data.get('numFound', 0) > 0:
+            book = data['docs'][0]
+            return f"Título: {book.get('title')}, Autor: {book.get('author_name', ['?'])[0]}, Año: {book.get('first_publish_year')}"
+        return "Libro no encontrado."
+    except Exception as e:
+        return f"Error API: {e}"
 
-# Lista de herramientas disponibles
-tools = [calculator, simulated_search]
+tools_map = {
+    "calculator": calculator,
+    "simulated_search": simulated_search,
+    "get_book_info": get_book_info
+}
 
-def get_azure_model():
-    """Crea y retorna el modelo de Azure OpenAI con validación de credenciales."""
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    api_key = os.getenv("AZURE_OPENAI_API_KEY")
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4.1")
-    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
-    
-    return AzureChatOpenAI(
-        azure_endpoint=endpoint,
-        azure_deployment=deployment,
-        api_version=api_version,
-        api_key=api_key,
-    )
-
-
-SYSTEM_PROMPT = """Eres un asistente que SIEMPRE usa las herramientas disponibles para responder preguntas.
-
-REGLAS IMPORTANTES:
-1. Para CUALQUIER pregunta sobre personas, lugares, datos o hechos, USA la herramienta simulated_search PRIMERO.
-2. Para cálculos matemáticos, USA la herramienta calculator.
-3. NUNCA respondas basándote en tu conocimiento propio sin antes consultar las herramientas.
-4. Si una herramienta no devuelve resultados, entonces puedes indicar que no encontraste la información."""
-
-
-def main():
-    """Ejemplo de uso de un agente con herramientas usando LangChain y Azure OpenAI."""
-    
-    # Crear el modelo de Azure OpenAI
-    azure_model = get_azure_model()
-    
-    # Crear el agente con el modelo de Azure y system prompt
-    agent = create_agent(
-        model=azure_model,
-        tools=tools,
-        system_prompt=SYSTEM_PROMPT
-    )
-    
-    # # Ejemplo 1: Pregunta que requiere cálculo
-    print("=" * 60)
-    print("Ejemplo 1: Cálculo matemático")
-    print("=" * 60)
-    result = agent.invoke({
-        "messages": [{"role": "user", "content": "¿Cuánto es 25 * 4 + 100?"}]
-    })
-    print(f"Respuesta: {result['messages'][-1].content}\n")
-    
-    # Ejemplo 2: Pregunta que requiere búsqueda
-    print("=" * 60)
-    print("Ejemplo 2: Búsqueda de información")
-    print("=" * 60)
-    result = agent.invoke({
-        "messages": [{"role": "user", "content": "¿Quién es el hermano de Miguel?"}]
-    })
-    print(f"Respuesta: {result['messages'][-1].content}\n")
-    
-
-
-if __name__ == "__main__":
-    main()
+# 2. JSON Schema definition to instruct the LLM on available tools
+AVAILABLE_TOOLS_SCHEMA = [
+    {
+        "name": "calculator",
+        "description": "Performs mathematical calculations. Use this for expressions like '2 + 2' or '25 * 4'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "The mathematical expression to evaluate."
+                }
+            },
+            "required": ["expression"]
+        }
+    },
+    {
+        "name": "simulated_search",
+        "description": "Searches for factual information about people, places, or tech in a local database.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query."
+                }
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "get_book_info",
+        "description": "Searches for real book information (author, year) using the Open Library API.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "The title of the book."
+                }
+            },
+            "required": ["title"]
+        }
+    }
+]
