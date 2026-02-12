@@ -895,9 +895,9 @@ def main(*, adapter_path: Path | None = None) -> None:
                 print(
                     f"[step={step + 1}] "
                     f"loss: {avg_loss:.4f}, "
-                    f": {avg_r_mean:.3f}, "
+                    f"r_mean: {avg_r_mean:.3f}, "
                     f"acc: {avg_acc:.3f}, "
-                    f": {avg_r_std:.3f}, "
+                    f"r_std: {avg_r_std:.3f}, "
                     f"lr: {lr:.2e}, "
                 )
 

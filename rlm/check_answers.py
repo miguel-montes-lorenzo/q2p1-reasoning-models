@@ -390,13 +390,13 @@ def _load_questions(*, questions_path: Path) -> list[QAItem]:
         raise FileNotFoundError(f"Questions file not found: {p}")
 
     raw_text: str = p.read_text(encoding="utf-8")
-    data: Any = json.loads(raw_text)
+    data: Any = json.loads(s=raw_text)
 
     if not isinstance(data, list):
         raise ValueError("Questions JSON must be a list of objects.")
 
     items: list[QAItem] = []
-    for idx, item in enumerate(data, start=1):
+    for idx, item in enumerate(iterable=data, start=1):
         if not isinstance(item, dict):
             raise ValueError(f"Questions[{idx}] must be an object/dict.")
 
@@ -619,7 +619,7 @@ if __name__ == "__main__":
         adapters = [
             # Path("weights/sft_lora/best-checkpoint"),
             Path("weights/sft_lora/best-checkpoint"),
-            # Path("weights/final_rlm_lora/best-checkpoint-600"),
+            Path("weights/final_rlm_lora/best-checkpoint"),
         ]
     if questions is None:
         questions = Path("./QA/questions.json")
