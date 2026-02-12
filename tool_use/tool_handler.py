@@ -1,7 +1,7 @@
 import json
 import re
 
-from tools_use.tools import AVAILABLE_TOOLS_SCHEMA, tools_map
+from tool_use.tools import AVAILABLE_TOOLS_SCHEMA, tools_map
 
 
 def parse_and_execute_tool_call(model_output: str):
