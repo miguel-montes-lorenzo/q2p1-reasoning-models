@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any, cast
 
 import torch
-from config import SFT_CONFIG as CONFIG
+from rlm.config import SFT_CONFIG as CONFIG
+from rlm.config import REPO_DIR
 from peft import PeftModel
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -613,17 +614,20 @@ def _parse_optional_path_from_argv(
 
 
 if __name__ == "__main__":
+    adapters: list[Path] | None
+    questions: Path | None
+    answers: Path | None
     adapters, questions, answers = _parse_optional_path_from_argv(argv=sys.argv)
 
     if adapters is None:
         adapters = [
-            # Path("weights/sft_lora/best-checkpoint"),
-            Path("weights/sft_lora/best-checkpoint"),
-            Path("weights/final_rlm_lora/best-checkpoint"),
+            REPO_DIR / "weights/sft_lora/best_checkpoint",
         ]
     if questions is None:
-        questions = Path("./QA/questions.json")
+        # questions = Path("./QA/questions.json")
+        questions = REPO_DIR.joinpath("rlm/QA/questions.json")
     if answers is None:
-        answers = Path("./QA/answers.json")
+        # answers = Path("./QA/answers.json")
+        answers = REPO_DIR.joinpath("rlm/QA/answers.json")
 
     main(adapter_paths=adapters, questions_path=questions, answers_path=answers)

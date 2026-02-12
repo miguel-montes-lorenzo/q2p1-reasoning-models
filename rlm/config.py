@@ -5,9 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from utils import find_parent_with_markers
+
 MODEL_NAME: str = "Qwen/Qwen2.5-7B-Instruct"
 DATASET_NAME: str = "gsm8k"
 DATASET_CONFIG: str = "main"
+
+REPO_DIR: Path = find_parent_with_markers(start=Path.cwd())
 
 
 SYSTEM_PROMPT: str = (
@@ -39,7 +43,7 @@ SYSTEM_PROMPT: str = (
 USE_4_BIT: bool = True
 MAX_SEQ_LEN: int = 1024
 
-MAX_NEW_TOKENS: int = 256
+MAX_NEW_TOKENS: int = 1024
 TEMPERATURE: float = 0.8
 TOP_P: float = 0.95
 
@@ -106,7 +110,7 @@ class SFT_CONFIG:
 
     # Training Management
     loogging_interval: int = 10
-    checkpoint_directory: Path = Path("./weights/sft_lora")
+    checkpoint_directory: Path = REPO_DIR / "weights/sft_lora"
     checkpoint_interval: int = 200
     keep_last_checkpoints: int = 2
 
@@ -186,6 +190,64 @@ class GRPO_CONFIG:
     lora_dropout: float = 0.05
 
     logging_interval: int = 25
-    checkpoint_directory: Path = Path("./weights/final_rlm_lora")
+    checkpoint_directory: Path = REPO_DIR / "weights/final_rlm_lora"
     checkpoint_interval: int = 200
     keep_last_checkpoints: int = 2
+
+
+@dataclass(frozen=True)
+class INFERENCE_CONFIG:
+    """Configuration container for Supervised Fine-Tuning (SFT).
+
+    This class centralizes all parameters required for SFT training,
+    checkpointing, and evaluation/check scripts. It is intended to be
+    instantiated once and passed to training and inference utilities
+    to ensure consistent behavior across scripts.
+
+    Attributes:
+        model_name: Hugging Face model identifier of the base causal LM.
+        dataset_name: Hugging Face dataset name used for SFT.
+        dataset_config: Dataset configuration or subset name passed to
+            `load_dataset(..., name=dataset_config)`.
+
+        use_4bit: Whether to load the base model using 4-bit NF4 quantization.
+        max_seq_len: Maximum total sequence length (prompt + completion).
+
+        system_prompt: System prompt prepended when formatting inputs using
+            a chat template.
+
+        max_new_tokens: Maximum number of tokens generated during inference
+            in check/evaluation scripts.
+        temperature: Sampling temperature for generation. If None, generation
+            defaults to deterministic decoding.
+        top_p: Nucleus sampling probability mass. Only used when sampling
+            is enabled.
+
+        epochs: Number of training epochs for SFT.
+        lr: Learning rate used during SFT optimization.
+        batch_size_questions: Per-device batch size measured in questions
+            (training examples).
+
+        loogging_interval: Number of steps between metric logging.
+        checkpoint_directory: Directory where LoRA adapters and tokenizer
+            checkpoints are saved.
+        checkpoint_interval: Number of steps between checkpoint saves.
+        keep_last_checkpoints: Maximum number of recent checkpoints to retain.
+    """
+
+    model_name: str = MODEL_NAME
+    dataset_name: str = DATASET_NAME
+    dataset_config: str = DATASET_CONFIG
+
+    use_4bit: bool = USE_4_BIT
+    max_seq_len: int = MAX_SEQ_LEN
+
+    system_prompt: str = SYSTEM_PROMPT
+
+    # Generation hyperparameters (check script)
+    do_sample: bool = True
+    max_new_tokens: int = MAX_NEW_TOKENS
+    temperature: float | None = TEMPERATURE if do_sample else None
+    top_p: float | None = TOP_P if do_sample else None
+
+    checkpoint_directory: Path = REPO_DIR / "weights/sft_lora/best_checkpoint"

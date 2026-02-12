@@ -7,11 +7,14 @@ from functools import partial
 from typing import Any
 
 import torch
-from config import SFT_CONFIG as CONFIG
 from datasets import Dataset, load_dataset
 from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import SFTConfig, SFTTrainer
+
+from rlm.config import SFT_CONFIG as CONFIG
+from rlm.config import REPO_DIR
+from utils import check_cwd
 
 
 def _parse_gsm8k_answer(*, answer_field: str) -> tuple[str, str]:
@@ -204,4 +207,5 @@ def train() -> None:
 
 
 if __name__ == "__main__":
+    check_cwd(expected_dir=REPO_DIR)
     train()

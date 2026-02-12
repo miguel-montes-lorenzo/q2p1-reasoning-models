@@ -1,95 +1,190 @@
 from __future__ import annotations
 
-from typing import Tuple
+import re
+from typing import Any
 
 import torch
 from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    PreTrainedModel,
+    PreTrainedTokenizerBase,
+)
 
-# Ruta a tu modelo final de fase 1
-# MODEL_PATH: str = "./weights/final_rlm_lora"
-MODEL_PATH: str = "/app/rlm/weights/final_rlm_lora"
-BASE_MODEL: str = "Qwen/Qwen2.5-7B-Instruct"
-
-USE_4BIT: bool = True
-MAX_NEW_TOKENS: int = 512
+from rlm.config import INFERENCE_CONFIG as CONFIG
+from rlm.config import REPO_DIR
+from utils import check_cwd
 
 
-def load_rlm_model() -> tuple[torch.nn.Module, AutoTokenizer]:
-    """Load the base model and the LoRA adapter for reasoning generation.
+def _build_bnb_config(*, use_4bit: bool) -> BitsAndBytesConfig | None:
+    """Build a BitsAndBytes quantization config matching the training setup.
+
+    Args:
+        use_4bit: Whether to enable 4-bit NF4 quantization.
+
+    Returns:
+        BitsAndBytesConfig if 4-bit is enabled, otherwise None.
+    """
+    if not use_4bit:
+        return None
+
+    return BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+
+
+def _build_messages(*, question: str, system_prompt: str) -> list[dict[str, str]]:
+    """Create system/user messages for the chat template.
+
+    Args:
+        question: User question to be solved.
+        system_prompt: System prompt defining format and behavior.
+
+    Returns:
+        A list of chat messages for apply_chat_template().
+    """
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": question},
+    ]
+
+
+def _extract_think_answer_block(*, text: str) -> str:
+    """Extract the strict <think>...</think><answer>...</answer> block.
+
+    Args:
+        text: Generated text to parse.
+
+    Returns:
+        Substring from the first '<think>' up to the first '</answer>' (inclusive).
+
+    Raises:
+        ValueError: If the required tag block is not found.
+    """
+    pattern: re.Pattern[str] = re.compile(r"(<think>.*?</answer>)", flags=re.DOTALL)
+    match: re.Match[str] | None = pattern.search(text)
+    if match is None:
+        raise ValueError("No <think>... </answer> block found in generated text.")
+    return match.group(1).strip()
+
+
+def load_rlm_model(
+    *,
+    cfg: CONFIG | None = None,
+) -> tuple[PreTrainedModel, PreTrainedTokenizerBase]:
+    """Load the base model and attach the trained LoRA adapter.
+
+    Args:
+        cfg: Optional SFT configuration instance. If None, a default one is created.
 
     Returns:
         A tuple (model, tokenizer) ready for inference.
     """
-    tokenizer = AutoTokenizer.from_pretrained(
-        pretrained_model_name_or_path=BASE_MODEL,
+    cfg = cfg or CONFIG()
+
+    tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
+        pretrained_model_name_or_path=str(cfg.model_name),
         use_fast=True,
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    bnb_config: BitsAndBytesConfig | None
-    if USE_4BIT:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.float16,
-        )
-    else:
-        bnb_config = None
+    bnb_config: BitsAndBytesConfig | None = _build_bnb_config(use_4bit=cfg.use_4bit)
 
-    base_model = AutoModelForCausalLM.from_pretrained(
-        pretrained_model_name_or_path=BASE_MODEL,
+    model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
+        pretrained_model_name_or_path=str(cfg.model_name),
         quantization_config=bnb_config,
-        dtype=torch.float16,
+        dtype=torch.bfloat16,
         device_map="auto",
     )
-    model = PeftModel.from_pretrained(model=base_model, model_id=MODEL_PATH)
+
+    model.config.pad_token_id = int(tokenizer.pad_token_id)
+    model.generation_config.pad_token_id = int(tokenizer.pad_token_id)
+    model.generation_config.eos_token_id = int(tokenizer.eos_token_id)
+
+    model = PeftModel.from_pretrained(
+        model=model,
+        model_id=str(cfg.checkpoint_directory),
+    )
     model.eval()
-    return (model, tokenizer)
+
+    return model, tokenizer
 
 
-def generate_reasoning(*, prompt: str, model: torch.nn.Module, tokenizer: Any) -> str:
-    """Generate a response including visible chain-of-thought tags.
+@torch.inference_mode()
+def generate_reasoning(
+    prompt: str,
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    *,
+    cfg: CONFIG | None = None,
+) -> str:
+    """Generate a sectioned response for a question using the trained model.
 
     Args:
-        prompt: User prompt/question.
-        model: Loaded causal LM with adapter.
-        tokenizer: Corresponding tokenizer.
+        prompt: The math question to solve.
+        model: The loaded (base + LoRA) causal LM.
+        tokenizer: The corresponding tokenizer.
+        cfg: Optional SFT configuration instance.
 
     Returns:
-        Decoded model response.
+        The generated assistant text strictly from <think> to </answer>.
     """
-    full_prompt: str = f"User: {prompt}\nAssistant:"
-    enc = tokenizer(
-        full_prompt,
-        return_tensors="pt",
-        truncation=True,
+    cfg = cfg or CONFIG()
+
+    messages: list[dict[str, str]] = _build_messages(
+        question=prompt,
+        system_prompt=str(cfg.system_prompt),
     )
-    device: torch.device = next(model.parameters()).device
-    input_ids = enc["input_ids"].to(device=device)
-    attention_mask = enc["attention_mask"].to(device=device)
 
-    with torch.no_grad():
-        outputs = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=MAX_NEW_TOKENS,
-            do_sample=False,
-            pad_token_id=int(tokenizer.pad_token_id),
-            eos_token_id=int(tokenizer.eos_token_id),
-        )
+    input_ids: torch.Tensor = tokenizer.apply_chat_template(
+        conversation=messages,
+        tokenize=True,
+        add_generation_prompt=True,
+        return_tensors="pt",
+    ).to(model.device)
 
-    response: str = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    return response
+    generation_kwargs: dict[str, Any] = {
+        "input_ids": input_ids,
+        "max_new_tokens": int(cfg.max_new_tokens),
+        "pad_token_id": int(tokenizer.pad_token_id),
+        "eos_token_id": int(tokenizer.eos_token_id),
+        "do_sample": bool(cfg.do_sample),
+    }
+
+    if bool(cfg.do_sample):
+        if cfg.temperature is not None:
+            generation_kwargs["temperature"] = float(cfg.temperature)
+        if cfg.top_p is not None:
+            generation_kwargs["top_p"] = float(cfg.top_p)
+        if getattr(cfg, "top_k", None) is not None:
+            generation_kwargs["top_k"] = int(cfg.top_k)
+
+    outputs: torch.Tensor = model.generate(**generation_kwargs)
+
+    prompt_len: int = int(input_ids.shape[-1])
+    new_tokens: torch.Tensor = outputs[0, prompt_len:]
+    generated_text: str = tokenizer.decode(
+        new_tokens,
+        skip_special_tokens=True,
+    ).strip()
+
+    return _extract_think_answer_block(text=generated_text)
 
 
 if __name__ == "__main__":
-    # Prueba local
-    model, tokenizer = load_rlm_model()
-    test_prompt: str = (
+    check_cwd(expected_dir=REPO_DIR)
+    cfg_: CONFIG = CONFIG()
+    model_, tokenizer_ = load_rlm_model(cfg=cfg_)
+
+    test_prompt_: str = (
         "Si tengo 3 manzanas y me dan el doble de las que tengo menos una, "
         "¿cuántas tengo?"
     )
-    print(generate_reasoning(prompt=test_prompt, model=model, tokenizer=tokenizer))
+
+    print(generate_reasoning(test_prompt_, model_, tokenizer_, cfg=cfg_))

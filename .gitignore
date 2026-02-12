@@ -1,10 +1,12 @@
 .venv/
 
-# ignore everything under weights, recursively
-rlm/weights/**
+main.py
 
-!rlm/weights/sft_lora.dvc
-!rlm/weights/final_rlm_lora.dvc
+# ignore everything under weights, recursively
+weights/**
+
+!weights/sft_lora.dvc
+!weights/final_rlm_lora.dvc
 
 # but keep this one file
-!rlm/weights/.gitkeep
+!weights/.gitkeep

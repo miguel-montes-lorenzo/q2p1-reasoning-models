@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from config import GRPO_CONFIG
 from datasets import Dataset, load_dataset
 from peft import (
     LoraConfig,
@@ -20,6 +19,10 @@ from peft import (
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+from rlm.config import GRPO_CONFIG
+from rlm.config import REPO_DIR
+from utils import check_cwd
 
 
 def _parse_gsm8k_answer(*, answer_field: str) -> tuple[str, str]:
@@ -930,6 +933,7 @@ def _parse_optional_checkpoint_arg(*, argv: list[str]) -> Path | None:
 
 
 if __name__ == "__main__":
+    check_cwd(expected_dir=REPO_DIR)
     path: Path | None = _parse_optional_checkpoint_arg(argv=sys.argv)
 
     default_best: Path = Path("weights/sft_lora/best-checkpoint")
