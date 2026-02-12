@@ -3,5 +3,8 @@
 # ignore everything under weights, recursively
 rlm/weights/**
 
+!rlm/weights/sft_lora.dvc
+!rlm/weights/final_rlm_lora.dvc
+
 # but keep this one file
 !rlm/weights/.gitkeep
