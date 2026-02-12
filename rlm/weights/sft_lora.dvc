@@ -1,0 +1,6 @@
+outs:
+- md5: b654b7aca7af3e207f0f641706552622.dir
+  size: 258538308
+  nfiles: 15
+  hash: md5
+  path: sft_lora
