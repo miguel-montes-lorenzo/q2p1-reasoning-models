@@ -5,14 +5,14 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from tool_handler import SYSTEM_PROMPT_TOOLS, parse_and_execute_tool_call
 
-load_dotenv(find_dotenv())
+load_dotenv(dotenv_path=find_dotenv())
 
 def get_azure_model():
     """Initializes and returns the Azure OpenAI Chat Model."""
-    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
-    api_key = os.getenv("AZURE_OPENAI_API_KEY")
-    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4")
-    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
+    endpoint = os.getenv(key="AZURE_OPENAI_ENDPOINT")
+    api_key = os.getenv(key="AZURE_OPENAI_API_KEY")
+    deployment = os.getenv(key="AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4")
+    api_version = os.getenv(key="AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
     
     return AzureChatOpenAI(
         azure_endpoint=endpoint,
@@ -22,7 +22,7 @@ def get_azure_model():
         temperature=0
     )
 
-def run_agent(user_query: str):
+def run_agent(user_query: str) -> None:
     llm = get_azure_model()
     
     print(f"\n{'='*50}")
@@ -48,10 +48,10 @@ def run_agent(user_query: str):
         print(f"NO TOOL EXECUTED (Normal conversation)")
         print(f"AI Reply: {execution_response['result']}")
 
-def main():
-    run_agent("Calcula la raíz cuadrada de 2543")
-    run_agent("Necesito información sobre el libro 'Harry Potter'")
-    run_agent("¿Quién es el hermano de Miguel?")
+def main() -> None:
+    run_agent(user_query="Calcula la raíz cuadrada de 2543")
+    run_agent(user_query="Necesito información sobre el libro 'Harry Potter'")
+    run_agent(user_query="¿Quién es el hermano de Miguel?")
 
 if __name__ == "__main__":
     main()
