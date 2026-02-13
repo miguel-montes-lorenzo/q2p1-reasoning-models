@@ -132,30 +132,6 @@ cat "\${NGROK_OUT}" >&2
 exit 1
 EOF
 # -------------------------
-RUN cat > /home/root/ngrok_shutdown.sh <<'EOF' \
-    && chmod +x /home/root/ngrok_shutdown.sh
-#!/usr/bin/env bash
-set -euo pipefail
-# Find any ngrok agent processes in this container (robust match).
-PIDS="$(pgrep -f '[n]grok.*http' || true)"
-if [[ -z "${PIDS}" ]]; then
-  echo "ngrok is not running in this container."
-  exit 0
-fi
-echo "Stopping ngrok (PIDs: ${PIDS})..."
-# Try graceful termination first
-kill ${PIDS} || true
-sleep 1
-# Check again
-PIDS_REMAINING="$(pgrep -f '[n]grok.*http' || true)"
-if [[ -n "${PIDS_REMAINING}" ]]; then
-  echo "ngrok still running, forcing stop (PIDs: ${PIDS_REMAINING})..."
-  kill -9 ${PIDS_REMAINING} || true
-fi
-echo "ngrok stopped."
-EOF
-# -------------------------
-
 
 ENV PYTHONUNBUFFERED=1
 
