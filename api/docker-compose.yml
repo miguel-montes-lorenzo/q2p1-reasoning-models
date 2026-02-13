@@ -4,8 +4,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        AVAILABLE_PORT: ${AVAILABLE_PORT}
     container_name: ${HOST_USERNAME}-ngrok-api-container
-    image: ${HOST_USERNAME}-ngrok-api:latest
+    image: g6-ngrok-api:latest
+    ports:
+      - "${AVAILABLE_PORT}:${AVAILABLE_PORT}"
 
     # GPU support (using runtime for compatibility)
     runtime: nvidia
@@ -19,18 +23,18 @@ services:
       - PYTHONUNBUFFERED=1
 
       # HuggingFace cache
-      - HF_HOME=home/root/.cache/huggingface
-      - TRANSFORMERS_CACHE=home/root/.cache/huggingface
+      - HF_HOME=/home/root/.cache/huggingface
+      - TRANSFORMERS_CACHE=/home/root/.cache/huggingface
 
       # Paths de modelos (como en tu compose original)
-      - SFT_MODEL_PATH=/home/root/weights/sft_lora # ???
-      - FINAL_MODEL_PATH=/home/root/weights/final_rlm_lora
+      - SFT_MODEL_PATH=/home/root/weights/sft_lora/best_checkpoint # ???
+      - FINAL_MODEL_PATH=/home/root/weights/final_rlm_lora/best_checkpoint
 
       # Lib path (como tu base)
       - LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda-12.8/lib64:/usr/lib/x86_64-linux-gnu
 
     # Working directory
-    working_dir: home/root
+    working_dir: /home/root
 
     # Volúmenes (unificados)
     volumes:
@@ -38,13 +42,13 @@ services:
       - ../rlm:/home/root/rlm
       - ../tool_use:/home/root/tool_use
       - ../weights:/home/root/weights
-      - ../api/hf_cache:/home/.cache/huggingface
+      - ${HOME}/.cache/hf_cache:/home/root/.cache/huggingface
 
     # Keep container running
     stdin_open: true
     tty: true
 
-    command: bash
+    command: bash  # TODO: RESTORE THIS
 
     # Network mode
     network_mode: bridge
