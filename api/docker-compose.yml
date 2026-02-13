@@ -1,10 +1,11 @@
+name: ${HOST_USERNAME}-ngrok-api-compose
 services:
-  fine-tune-mgp-g6:
+  ngrok-api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: fine-tune-mgp-g6
-    image: fine-tune-mgp-g6:latest
+    container_name: ${HOST_USERNAME}-ngrok-api-container
+    image: ${HOST_USERNAME}-ngrok-api:latest
 
     # GPU support (using runtime for compatibility)
     runtime: nvidia
@@ -18,24 +19,26 @@ services:
       - PYTHONUNBUFFERED=1
 
       # HuggingFace cache
-      - HF_HOME=/app/.cache/huggingface
-      - TRANSFORMERS_CACHE=/app/.cache/huggingface
+      - HF_HOME=home/root/.cache/huggingface
+      - TRANSFORMERS_CACHE=home/root/.cache/huggingface
 
       # Paths de modelos (como en tu compose original)
-      - SFT_MODEL_PATH=/app/rlm/weights/sft_lora
-      - FINAL_MODEL_PATH=/app/weights/final_rlm_lora
+      - SFT_MODEL_PATH=/home/root/weights/sft_lora # ???
+      - FINAL_MODEL_PATH=/home/root/weights/final_rlm_lora
 
       # Lib path (como tu base)
       - LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda-12.8/lib64:/usr/lib/x86_64-linux-gnu
 
     # Working directory
-    working_dir: /app
+    working_dir: home/root
 
     # Volúmenes (unificados)
     volumes:
-      - ./rlm/weights:/app/rlm/weights
-      - ./weights:/app/weights
-      - ./hf_cache:/app/.cache/huggingface
+      - ../api/app.py:/home/root/api/app.py
+      - ../rlm:/home/root/rlm
+      - ../tool_use:/home/root/tool_use
+      - ../weights:/home/root/weights
+      - ../api/hf_cache:/home/.cache/huggingface
 
     # Keep container running
     stdin_open: true

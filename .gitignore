@@ -1,6 +1,7 @@
 .venv/
 
 main.py
+api/hf_cache
 
 # ignore everything under weights, recursively
 weights/**
