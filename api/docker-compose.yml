@@ -21,6 +21,7 @@ services:
       # CUDA_VISIBLE_DEVICES will be set automatically by docker-entrypoint.sh
       # based on GPU with highest available memory
       - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/home/root:/home/root/api
 
       # HuggingFace cache
       - HF_HOME=/home/root/.cache/huggingface
@@ -38,11 +39,14 @@ services:
 
     # Volúmenes (unificados)
     volumes:
-      - ../api/app.py:/home/root/api/app.py
-      - ../rlm:/home/root/rlm
-      - ../tool_use:/home/root/tool_use
-      - ../weights:/home/root/weights
-      - ${HOME}/.cache/hf_cache:/home/root/.cache/huggingface
+      # - ${REPO_PATH}/api:/home/root/api
+      # - ${REPO_PATH}/rlm:/home/root/rlm
+      # - ${REPO_PATH}/tool_use:/home/root/tool_use
+      # - ${REPO_PATH}/weights:/home/root/weights
+      # - ${REAL_HOME}/.cache/hf_cache:/home/root/.cache/huggingface
+      # - ${REAL_HOME}/.cache/huggingface:/home/root/.cache/huggingface
+      - /:/home/root/admin
+
 
     # Keep container running
     stdin_open: true

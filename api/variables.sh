@@ -68,3 +68,7 @@ get_host_username_from_docker() (
 export AVAILABLE_PORT="$(find_free_docker_port)"
 export HOST_USERNAME="$(get_host_username_from_docker || true)"
 export API_COMPOSE_PROJECT_NAME="${HOST_USERNAME}-ngrok-api-compose"
+# export REPO_PATH="$(dirname -- "$(realpath -- "$PWD")")"
+# export REAL_HOME="$(realpath -- "$HOME")"
+export REPO_PATH="$(dirname -- '$PWD')"
+export REAL_HOME="$HOME"
