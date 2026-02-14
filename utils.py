@@ -6,7 +6,7 @@ from pathlib import Path
 
 def find_parent_with_markers(
     start: Path,
-    markers: Iterable[str] = (".git", ".venv"),
+    markers: Iterable[str] = (".git", ".venv", "pyproject.toml"),
 ) -> Path:
     """Return the first parent directory containing any marker directory.
 

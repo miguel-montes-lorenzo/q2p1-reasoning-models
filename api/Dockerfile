@@ -2,74 +2,68 @@
 FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG AVAILABLE_PORT=
-ENV AVAILABLE_PORT=${AVAILABLE_PORT}
+ARG NGROK_PORT=
 
 WORKDIR /home/root
 
-# System deps (no need to apt-install python if uv will provision it)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     wget \
     curl \
     ca-certificates \
-    # ffmpeg \
-    # libx264-dev \
-    # libxvidcore-dev \
     libsm6 \
     libxext6 \
     libxrender-dev \
     libglib2.0-0 \
     libgl1-mesa-glx \
-    # build-essential \
-    # ninja-build \
     iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv (standalone binary)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && ln -sf /root/.local/bin/uv /usr/local/bin/uv
 
-# Tell uv where to keep downloaded interpreters + caches (optional but nice)
 ENV UV_PYTHON_DIR=/opt/uv/python \
-    UV_CACHE_DIR=/opt/uv/cache
+    UV_CACHE_DIR=/opt/uv/cache \
+    HOME=/home/root \
+    HF_HOME=/home/root/.cache/huggingface
 
-# Install Python 3.10 via uv, then create a venv using that interpreter
-ENV VIRTUAL_ENV=/opt/venv
-RUN uv python install 3.10 \
-    && uv venv --python 3.10 "${VIRTUAL_ENV}"
 
-# Put venv first on PATH
-ENV PATH="${VIRTUAL_ENV}/bin:/root/.local/bin:${PATH}"
+# Force the project environment to be /opt/venv (no /home/root/.venv)
+ENV VIRTUAL_ENV=/opt/venv \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/opt/venv/bin:/root/.local/bin:${PATH}"
 
-# Copy requirements early for caching
-COPY requirements.txt /home/root/requirements.txt
+COPY .python-version /home/root/.python-version
 
-# Install PyTorch CUDA 12.1 wheels explicitly (recommended for stability)
-# RUN uv pip install --no-cache \
-#     "torch>=2.4.0" "torchvision>=0.19.0" "torchaudio>=2.4.0" \
-#     --index-url https://download.pytorch.org/whl/cu121
-RUN uv pip install --no-cache "torch>=2.4.0" \
-    --index-url https://download.pytorch.org/whl/cu121
+RUN uv python install \
+  && PY_VER="$(tr -d ' \t\r\n' </home/root/.python-version)" \
+  && PY_VER="${PY_VER#python-}" \
+  && uv venv --python "${PY_VER}" "${VIRTUAL_ENV}"
 
-# Install python deps excluding torch / flash_attn (installed separately)
-RUN bash -lc 'grep -vE "^(torch|torchvision|torchaudio|flash[_-]?attn)" /home/root/requirements.txt > /home/root/requirements_no_torch.txt || true' \
-    && uv pip install --no-cache "huggingface_hub[cli]" \
-    && uv pip install --no-cache -r /home/root/requirements_no_torch.txt
+# # Install the requested Python + create the venv at /opt/venv using that interpreter
+# RUN uv python install \
+#     && uv venv --python-file /home/root/.python-version "${VIRTUAL_ENV}"
 
-# Optional: flash-attn (best-effort, don't fail the build if it can't compile)
-RUN uv pip install --no-cache packaging ninja \
-    && (uv pip install --no-cache flash-attn --no-build-isolation \
-        && echo "flash_attn installed successfully") || \
-       (echo "Warning: flash_attn installation failed (continuing)." && true)
+COPY pyproject.toml /home/root/pyproject.toml
+COPY uv.lock /home/root/uv.lock
+COPY ./api/.bashrc /home/root/.bashrc
+COPY ./api/.inputrc /home/root/.inputrc
+
+# Install deps into /opt/venv
+RUN uv sync --frozen
 
 RUN mkdir -p /home/root
-RUN mkdir -p /home/root/.cache/
+
+
+
+
+
 
 
 # -------------------------
 # NGROK (installed at build)
 # -------------------------
+ENV NGROK_PORT=${NGROK_PORT}
 ENV NGROK_TGZ_URL=https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
 RUN cd /home/root \
     && wget -qO ngrok.tgz "${NGROK_TGZ_URL}" \
@@ -78,8 +72,8 @@ RUN cd /home/root \
     && chmod +x /home/root/ngrok \
     && ln -sf /home/root/ngrok /usr/local/bin/ngrok
 # -------------------------
-RUN cat > /home/root/ngrok_setup.sh <<EOF \
-    && chmod +x /home/root/ngrok_setup.sh
+RUN cat > /home/root/launch_ngrok.sh <<'EOF' \
+    && chmod +x /home/root/launch_ngrok.sh
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -90,97 +84,169 @@ if [[ ! -t 0 || ! -t 1 ]]; then
 fi
 
 # BAKED DEFAULT (can still be overridden by runtime env)
-AVAILABLE_PORT_DEFAULT="${AVAILABLE_PORT}"
-AVAILABLE_PORT="\${AVAILABLE_PORT:-\${AVAILABLE_PORT_DEFAULT}}"
-if [[ -z "\${AVAILABLE_PORT:-}" ]]; then
-  echo "Error: AVAILABLE_PORT environment variable is not set." >&2
+NGROK_PORT_DEFAULT="${NGROK_PORT}"
+NGROK_PORT="${NGROK_PORT:-${NGROK_PORT_DEFAULT}}"
+if [[ -z "${NGROK_PORT:-}" ]]; then
+  echo "Error: NGROK_PORT environment variable is not set." >&2
   exit 1
 fi
-if ! [[ "\${AVAILABLE_PORT}" =~ ^[0-9]+$ ]]; then
-  echo "Error: AVAILABLE_PORT must be a numeric port, got: \${AVAILABLE_PORT}" >&2
+if ! [[ "${NGROK_PORT}" =~ ^[0-9]+$ ]]; then
+  echo "Error: NGROK_PORT must be a numeric port, got: ${NGROK_PORT}" >&2
   exit 1
 fi
-if (( AVAILABLE_PORT < 1 || AVAILABLE_PORT > 65535 )); then
-  echo "Error: AVAILABLE_PORT out of range (1-65535), got: \${AVAILABLE_PORT}" >&2
+if (( NGROK_PORT < 1 || NGROK_PORT > 65535 )); then
+  echo "Error: NGROK_PORT out of range (1-65535), got: ${NGROK_PORT}" >&2
   exit 1
 fi
 
-# API entrypoint (module:app). Override at runtime if needed:
-#   API_APP="api.app:app" ./ngrok_setup.sh
-API_APP_DEFAULT="\${API_APP_DEFAULT:-api.app:app}"
-API_APP="\${API_APP:-\${API_APP_DEFAULT}}"
+# API entrypoint (module:app)
+API_APP_DEFAULT="${API_APP_DEFAULT:-api.app:app}"
+API_APP="${API_APP:-${API_APP_DEFAULT}}"
 
 read -r -p "Enter ngrok authtoken: " NGROK_AUTHTOKEN
 echo
-if [[ -z "\${NGROK_AUTHTOKEN}" ]]; then
+if [[ -z "${NGROK_AUTHTOKEN}" ]]; then
   echo "Error: authtoken cannot be empty." >&2
   exit 1
 fi
 
-TMP_CFG="\$(mktemp)"
-cleanup() {
-  rm -f "\${TMP_CFG}" || true
-}
-trap cleanup EXIT
+TMP_CFG="$(mktemp)"
+API_PID=""
+NGROK_PID=""
 
-cat > "\${TMP_CFG}" <<CFG
+cleanup_all() {
+  echo
+  echo "Stopping services..."
+
+  if [[ -n "${NGROK_PID}" ]] && kill -0 "${NGROK_PID}" 2>/dev/null; then
+    kill "${NGROK_PID}" 2>/dev/null || true
+    wait "${NGROK_PID}" 2>/dev/null || true
+  fi
+
+  if [[ -n "${API_PID}" ]] && kill -0 "${API_PID}" 2>/dev/null; then
+    kill "${API_PID}" 2>/dev/null || true
+    wait "${API_PID}" 2>/dev/null || true
+  fi
+
+  rm -f "${TMP_CFG}" 2>/dev/null || true
+  echo "Exited cleanly."
+}
+
+trap cleanup_all EXIT INT TERM
+
+cat > "${TMP_CFG}" <<CFG
 version: "2"
-authtoken: "\${NGROK_AUTHTOKEN}"
+authtoken: "${NGROK_AUTHTOKEN}"
 CFG
 
 API_LOG="/tmp/api.log"
 NGROK_LOG="/tmp/ngrok.log"
+CACHE_LOG="/tmp/cache_model_assets.log"
 
-echo "Starting API: uvicorn \${API_APP} --host 0.0.0.0 --port \${AVAILABLE_PORT}"
-echo "API logs: \${API_LOG}"
+# Ensure we are in the repository root so `python -m api.cache_model_assets` works
+REPO_DIR="${REPO_DIR:-/home/root}"
+if [[ ! -d "${REPO_DIR}/api" ]]; then
+  echo "Error: REPO_DIR does not look like a valid repo root: ${REPO_DIR}" >&2
+  exit 1
+fi
+cd "${REPO_DIR}"
 
-# Start API in background and capture logs
-uvicorn "\${API_APP}" --host 0.0.0.0 --port "\${AVAILABLE_PORT}" \
-  2>&1 | tee "\${API_LOG}" &
-API_PID="\$!"
+echo "Ensuring model assets are cached: python -m api.cache_model_assets"
+echo "Cache logs: ${CACHE_LOG}"
 
-# Ensure we cleanup the API when exiting
-cleanup_api() {
-  if kill -0 "\${API_PID}" >/dev/null 2>&1; then
-    kill "\${API_PID}" >/dev/null 2>&1 || true
-    wait "\${API_PID}" >/dev/null 2>&1 || true
-  fi
-}
-trap cleanup_api EXIT
-
-echo "Waiting for API to accept connections on http://127.0.0.1:\${AVAILABLE_PORT} ..."
-# Wait up to ~30s (60 * 0.5s) for the port to open
-for _ in \$(seq 1 60); do
-  if curl -fsS "http://127.0.0.1:\${AVAILABLE_PORT}/" >/dev/null 2>&1; then
-    break
-  fi
-  if ! kill -0 "\${API_PID}" >/dev/null 2>&1; then
-    echo "Error: API process exited early. Dumping last logs:" >&2
-    tail -n 200 "\${API_LOG}" >&2 || true
-    exit 1
-  fi
-  sleep 0.5
-done
-
-if ! curl -fsS "http://127.0.0.1:\${AVAILABLE_PORT}/" >/dev/null 2>&1; then
-  echo "Error: API did not become ready on http://127.0.0.1:\${AVAILABLE_PORT}" >&2
-  echo "Dumping last logs:" >&2
-  tail -n 200 "\${API_LOG}" >&2 || true
+if ! python -m api.cache_model_assets 2>&1 | tee "${CACHE_LOG}"; then
+  echo "Error: cache_model_assets failed. See ${CACHE_LOG}." >&2
   exit 1
 fi
 
-echo "API is up. Starting ngrok tunnel to http://localhost:\${AVAILABLE_PORT}"
-echo "Ngrok logs: \${NGROK_LOG}"
+echo "Starting API: uvicorn ${API_APP} --host 0.0.0.0 --port ${NGROK_PORT}"
+echo "API logs: ${API_LOG}"
+
+uvicorn "${API_APP}" --host 0.0.0.0 --port "${NGROK_PORT}" \
+  >"${API_LOG}" 2>&1 &
+API_PID="$!"
+
+echo "Waiting for API to open LISTEN socket on 0.0.0.0:${NGROK_PORT} ..."
+
+for i in $(seq 1 1200); do
+  if ! kill -0 "${API_PID}" >/dev/null 2>&1; then
+    echo "Error: API process exited early. Dumping last logs:" >&2
+    tail -n 200 "${API_LOG}" >&2 || true
+    exit 1
+  fi
+
+  if ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq "(:|\\])${NGROK_PORT}\$"; then
+    echo "Port ${NGROK_PORT} is now LISTENing."
+    break
+  fi
+
+  if (( i % 20 == 0 )); then
+    echo "Still waiting for LISTEN socket... (${i}/1200)"
+  fi
+
+  sleep 0.5
+done
+
+if ! ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq "(:|\\])${NGROK_PORT}\$"; then
+  echo "Error: port ${NGROK_PORT} never entered LISTEN state." >&2
+  tail -n 200 "${API_LOG}" >&2 || true
+  exit 1
+fi
+
+echo "Waiting for API to become reachable on http://127.0.0.1:${NGROK_PORT} ..."
+
+for i in $(seq 1 1200); do
+  if ! kill -0 "${API_PID}" >/dev/null 2>&1; then
+    echo "Error: API process exited early. Dumping last logs:" >&2
+    tail -n 200 "${API_LOG}" >&2 || true
+    exit 1
+  fi
+
+  http_code="$(
+    curl -sS -o /dev/null -w '%{http_code}' \
+      "http://127.0.0.1:${NGROK_PORT}/" || true
+  )"
+
+  if [[ "${http_code}" != "000" ]]; then
+    echo "API reachable (HTTP ${http_code})."
+    break
+  fi
+
+  if (( i % 20 == 0 )); then
+    echo "Still waiting for HTTP response... (${i}/1200)"
+  fi
+
+  sleep 0.5
+done
+
+http_code="$(
+  curl -sS -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:${NGROK_PORT}/" || true
+)"
+
+if [[ "${http_code}" == "000" ]]; then
+  echo "Error: API did not become reachable on http://127.0.0.1:${NGROK_PORT}" >&2
+  tail -n 200 "${API_LOG}" >&2 || true
+  exit 1
+fi
+
+echo "API is up. Starting ngrok tunnel to http://localhost:${NGROK_PORT}"
+echo "Ngrok logs: ${NGROK_LOG}"
 echo "Ngrok web UI: http://127.0.0.1:4040"
 
-# Run ngrok in foreground, logging everything to stdout and to a file
-exec ngrok http "\${AVAILABLE_PORT}" \
-  --config "\${TMP_CFG}" \
+ngrok http "${NGROK_PORT}" \
+  --config "${TMP_CFG}" \
   --log=stdout \
   --log-level=debug \
-  2>&1 | tee "\${NGROK_LOG}"
+  2>&1 | tee "${NGROK_LOG}" &
+NGROK_PID="$!"
+
+wait "${NGROK_PID}"
 EOF
 # -------------------------
+
+
+
 
 ENV PYTHONUNBUFFERED=1
 

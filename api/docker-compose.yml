@@ -2,14 +2,16 @@ name: ${HOST_USERNAME}-ngrok-api-compose
 services:
   ngrok-api:
     build:
-      context: .
-      dockerfile: Dockerfile
+      # context: .
+      # dockerfile: Dockerfile
+      context: ..
+      dockerfile: api/Dockerfile
       args:
-        AVAILABLE_PORT: ${AVAILABLE_PORT}
+        NGROK_PORT: ${NGROK_PORT}
     container_name: ${HOST_USERNAME}-ngrok-api-container
     image: g6-ngrok-api:latest
     ports:
-      - "${AVAILABLE_PORT}:${AVAILABLE_PORT}"
+      - "${NGROK_PORT}:${NGROK_PORT}"
 
     # GPU support (using runtime for compatibility)
     runtime: nvidia
@@ -39,13 +41,18 @@ services:
 
     # Volúmenes (unificados)
     volumes:
-      # - ${REPO_PATH}/api:/home/root/api
-      # - ${REPO_PATH}/rlm:/home/root/rlm
-      # - ${REPO_PATH}/tool_use:/home/root/tool_use
-      # - ${REPO_PATH}/weights:/home/root/weights
-      # - ${REAL_HOME}/.cache/hf_cache:/home/root/.cache/huggingface
-      # - ${REAL_HOME}/.cache/huggingface:/home/root/.cache/huggingface
-      - /:/home/root/admin
+      - ${REPO_PATH}/pyproject.toml:/home/root/pyproject.toml
+      - ${REPO_PATH}/api/app.py:/home/root/api/app.py
+      - ${REPO_PATH}/api/cache_model_assets.py:/home/root/api/cache_model_assets.py
+      - ${REPO_PATH}/rlm:/home/root/rlm
+      - ${REPO_PATH}/tool_use:/home/root/tool_use
+      - ${REPO_PATH}/rag:/home/root/rag
+      - ${REPO_PATH}/weights:/home/root/weights
+      - ${REPO_PATH}/utils.py:/home/root/utils.py
+
+      - ${REAL_HF_CACHE}:/home/root/.cache/huggingface
+
+      # - /:/home/root/admin
 
 
     # Keep container running

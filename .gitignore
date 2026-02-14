@@ -1,7 +1,7 @@
 .venv/
 
 main.py
-api/hf_cache
+api/ngrok-port
 
 # ignore everything under weights, recursively
 weights/**
