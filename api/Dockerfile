@@ -56,10 +56,6 @@ RUN mkdir -p /home/root
 
 
 
-
-
-
-
 # -------------------------
 # NGROK (installed at build)
 # -------------------------
@@ -142,6 +138,34 @@ CFG
 API_LOG="/tmp/api.log"
 NGROK_LOG="/tmp/ngrok.log"
 CACHE_LOG="/tmp/cache_model_assets.log"
+
+# --- NEW: stop previously running services that would cause conflicts ---
+echo "Checking for previous ngrok/port ${NGROK_PORT} listeners..."
+
+# Stop any prior ngrok in this container (prevents ERR_NGROK_334 from duplicates here)
+if pgrep -x ngrok >/dev/null 2>&1; then
+  echo "Stopping existing ngrok processes..."
+  pkill -x ngrok 2>/dev/null || true
+fi
+
+# If something is already listening on NGROK_PORT, stop it (likely old uvicorn)
+if ss -ltnp 2>/dev/null | grep -Eq "(:|\\])${NGROK_PORT}\\b"; then
+  echo "Port ${NGROK_PORT} already in use; stopping existing listener(s)..."
+  echo "Run launch_ngrok again to start a new service."
+  # Extract PIDs from ss output like users:(("uvicorn",pid=852,fd=...))
+  ss -ltnp 2>/dev/null \
+    | grep -E "(:|\\])${NGROK_PORT}\\b" \
+    | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' \
+    | sort -u \
+    | while read -r pid; do
+        [[ -n "${pid}" ]] || continue
+        kill "${pid}" 2>/dev/null || true
+      done
+fi
+
+# Small wait to let sockets release
+sleep 0.2
+# --- END NEW ---
 
 # Ensure we are in the repository root so `python -m api.cache_model_assets` works
 REPO_DIR="${REPO_DIR:-/home/root}"
