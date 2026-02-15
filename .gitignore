@@ -1,10 +1,15 @@
 .venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
 
 # repo root
 main.py
 
 # ./api
 api/ngrok-port
+api/ngrok-url
 
 # ./weights
 # ignore everything under weights, recursively
