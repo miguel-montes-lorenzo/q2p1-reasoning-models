@@ -128,12 +128,22 @@ def train() -> None:
     # 2. Build quantization config
     bnb_config: BitsAndBytesConfig | None = _build_bnb_config(use_4bit=cfg.use_4bit)
 
-    # 3. Load model (important: use `dtype` per your Transformers version)
+    # 3. Load model
+    # NOTE: During training, mixing `device_map="auto"` (which can shard the model
+    # across multiple GPUs) with `Trainer`'s default multi-GPU behavior (DataParallel
+    # when not launched via `accelerate`) can crash with:
+    #   "module must have its parameters ... on device cuda:0 ... but found ... cuda:X"
+    # To keep training robust in a plain `python train_sft.py` run, we force the
+    # model to live entirely on a single device (cuda:0 inside the container).
+    device_map: Any | None = None
+    if torch.cuda.is_available():
+        device_map = {"": 0}
+
     model: Any = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=cfg.model_name,
         quantization_config=bnb_config,
         dtype=torch.bfloat16,
-        device_map="auto",
+        device_map=device_map,
     )
     model.config.pad_token_id = tokenizer.pad_token_id
     model.generation_config.pad_token_id = tokenizer.pad_token_id

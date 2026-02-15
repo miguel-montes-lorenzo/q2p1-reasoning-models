@@ -1,7 +1,8 @@
 import json
 import re
 
-from tools_use.tools import AVAILABLE_TOOLS_SCHEMA, tools_map
+from tool_use.tools import AVAILABLE_TOOLS_SCHEMA, tools_map
+from rlm.config import SYSTEM_PROMPT as ORIGINAL_SYSTEM_PROMPT
 
 
 def parse_and_execute_tool_call(model_output: str):
@@ -68,21 +69,38 @@ def parse_and_execute_tool_call(model_output: str):
 
 # System Prompt construction
 # This instructs the model to use the defined JSON format for tool calls.
-SYSTEM_PROMPT_TOOLS: str = f"""
-        You are a helpful assistant with access to external tools.
+_BASE_PROMPT_WITH_TOOL_EXCEPTION: str = (
+    ORIGINAL_SYSTEM_PROMPT
+    .replace(
+        "- The response must begin with the opening tag of the think section: `<think>`.\n",
+        "- If NO tool is needed, the response must begin with the opening tag of the think section: `<think>`.\n",
+    )
+    .replace(
+        "- The response must end with the closing tag of the answer section: `</answer>`.\n",
+        "- If NO tool is needed, the response must end with the closing tag of the answer section: `</answer>`.\n",
+    )
+)
 
-        AVAILABLE TOOLS (JSON Schema):
-        {json.dumps(obj=AVAILABLE_TOOLS_SCHEMA, indent=2)}
-
-        INSTRUCTIONS:
-        1. If the user asks a question that requires a tool (math, facts, or books), YOU MUST RESPOND ONLY WITH A JSON BLOCK.
-        2. The JSON format must be strictly:
-        ```json
-        {{
-            "tool": "tool_name",
-            "args": {{
-                "argument_name": "value"
-            }}
-        }}
-        3. If no tool is needed, respond with normal text.
-        """
+SYSTEM_PROMPT_TOOLS: str = (
+    _BASE_PROMPT_WITH_TOOL_EXCEPTION
+    + "\n\n"
+    + "TOOLS:\n"
+    + "- You have access to external tools.\n"
+    + "- If the user request requires using a tool (math calculation, factual lookup, or books), you MUST respond ONLY with a JSON tool call.\n"
+    + "- When calling a tool, DO NOT output <think> or <answer> tags, and DO NOT add any extra text.\n"
+    + "\n"
+    + "AVAILABLE TOOLS (JSON Schema):\n"
+    + json.dumps(obj=AVAILABLE_TOOLS_SCHEMA, indent=2)
+    + "\n\n"
+    + "TOOL CALL FORMAT (STRICT):\n"
+    + "```json\n"
+    + "{\n"
+    + "  \"tool\": \"tool_name\",\n"
+    + "  \"args\": {\n"
+    + "    \"argument_name\": \"value\"\n"
+    + "  }\n"
+    + "}\n"
+    + "```\n\n"
+    + "IF NO TOOL IS NEEDED:\n"
+    + "- Respond normally following the FORMAT rules above (use <think> and <answer>).\n"
+)

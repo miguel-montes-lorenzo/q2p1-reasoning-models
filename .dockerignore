@@ -1,0 +1,23 @@
+# Keep the Docker build context small. Runtime files are mounted via volumes.
+
+# Large local data/model dirs
+weights/
+rlm/weights/
+hf_cache/
+
+# Python/venv/cache
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# VCS + tooling
+.git/
+.dvc/
+.idea/
+.vscode/
+
+# OS/editor junk
+.DS_Store

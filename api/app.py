@@ -13,7 +13,7 @@ PORT = 8182
 # --- IMPORTACIONES DE LOS MÓDULOS DE LOS ALUMNOS ---
 # TODO: Descomentar a medida que se implementen las fases
 from rlm.inference import generate_reasoning, load_rlm_model
-from tool_use.tool_handler import parse_and_execute_tool_call
+from tool_use.tool_handler import SYSTEM_PROMPT_TOOLS, parse_and_execute_tool_call
 
 # from rag.rag_engine import retrieve_context, format_rag_prompt
 # from react.agent import ReActAgent
@@ -111,13 +111,18 @@ async def phase2_endpoint(request: QueryRequest):
         # Concatenamos las instrucciones de herramientas con la pregunta del usuario.
         # ADAPTALO: Si tu modelo usa un formato especial (ej: <|system|>, [INST], etc.), añádelo aquí.
 
-        final_prompt = None  # Poner el promt de Miguel
+        # For Phase 2 we keep the user question as-is, but override the system prompt
+        # so the model is instructed to output JSON tool calls when needed.
+        final_prompt: str = request.prompt
 
         # 3. Generar respuesta con tu modelo local
         # Usamos la misma función de inferencia que en la Fase 1
         # Asegúrate de que generate_reasoning acepte el string completo
         raw_content = generate_reasoning(
-            prompt=final_prompt, model=MODEL, tokenizer=TOKENIZER
+            prompt=final_prompt,
+            model=MODEL,
+            tokenizer=TOKENIZER,
+            system_prompt=SYSTEM_PROMPT_TOOLS,
         )
 
         # 4. Lógica de Herramientas (Parsing y Ejecución)

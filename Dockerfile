@@ -53,6 +53,17 @@ RUN pip3 install --no-cache-dir packaging ninja && \
 # Copy the full project
 COPY . /app
 
+# Ensure every `bash` session (including `docker exec`) auto-selects a single GPU
+# unless CUDA_VISIBLE_DEVICES is explicitly set.
+RUN chmod +x /app/select_gpu.sh && \
+    cp /app/select_gpu.sh /etc/profile.d/select_gpu.sh && \
+    chmod +x /etc/profile.d/select_gpu.sh && \
+    grep -q "profile.d/select_gpu.sh" /etc/bash.bashrc || echo "source /etc/profile.d/select_gpu.sh" >> /etc/bash.bashrc
+
+# Entry point: select a single GPU when not explicitly set.
+RUN chmod +x /app/docker-entrypoint.sh && ln -sf /app/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+
 # Env vars aligned with your docker-compose
 ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/app/.cache/huggingface \
