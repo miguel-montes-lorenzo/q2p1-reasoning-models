@@ -1,0 +1,164 @@
+<!-- web/public/index.html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Q2P1 Web UI</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="title">
+          <div class="title-main">Q2P1 Web UI</div>
+          <div class="title-sub">Chat interface for Phases 1–4</div>
+        </div>
+
+        <div class="status">
+          <div class="status-line">
+            <span class="label">Backend port:</span>
+            <span id="backendPortValue" class="value">unknown</span>
+            <button id="refreshPortBtn" class="btn" type="button">
+              Refresh port
+            </button>
+          </div>
+
+          <div class="filters">
+            <span class="label">Show tags:</span>
+            <div id="tagCheckboxes" class="checkboxes"></div>
+          </div>
+        </div>
+      </header>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="phase1" type="button">Phase 1</button>
+        <button class="tab" data-tab="phase2" type="button">Phase 2</button>
+        <button class="tab" data-tab="phase3" type="button">Phase 3</button>
+        <button class="tab" data-tab="phase4" type="button">Phase 4</button>
+
+        <div class="tabs-spacer"></div>
+
+        <button id="clearChatBtn" class="btn danger" type="button">
+          Clear chat
+        </button>
+      </nav>
+
+      <main class="main">
+        <section id="chatPhase1" class="chat active"></section>
+        <section id="chatPhase2" class="chat"></section>
+        <section id="chatPhase3" class="chat"></section>
+        <section id="chatPhase4" class="chat"></section>
+      </main>
+
+      <footer class="composer">
+        <textarea
+          id="promptInput"
+          class="prompt"
+          placeholder="Type a prompt... (Enter to send, Shift+Enter for newline)"
+          rows="3"
+          autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+        ></textarea>
+        <button id="sendBtn" class="btn primary" type="button">Send</button>
+      </footer>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html> -->
+
+
+
+
+
+
+<!-- web/public/index.html -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Q2P1 Web UI</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="title">
+          <div class="title-main">Q2P1 Web UI</div>
+          <div class="title-sub">Chat interface for Phases 1–4</div>
+        </div>
+
+        <div class="status">
+          <div class="status-line">
+            <span class="label">Backend URL:</span>
+            <span id="backendPortValue" class="value">unknown</span>
+            <button id="refreshPortBtn" class="btn" type="button">
+              Refresh URL
+            </button>
+          </div>
+
+          <div class="filters">
+            <span class="label">Show tags:</span>
+            <div id="tagCheckboxes" class="checkboxes"></div>
+          </div>
+        </div>
+      </header>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="phase1" type="button">Phase 1</button>
+        <button class="tab" data-tab="phase2" type="button">Phase 2</button>
+        <button class="tab" data-tab="phase3" type="button">Phase 3</button>
+        <button class="tab" data-tab="phase4" type="button">Phase 4</button>
+
+        <div class="tabs-spacer"></div>
+
+        <button id="clearChatBtn" class="btn danger" type="button">
+          Clear chat
+        </button>
+      </nav>
+
+      <main class="main">
+        <section id="chatPhase1" class="chat active"></section>
+        <section id="chatPhase2" class="chat"></section>
+        <section id="chatPhase3" class="chat"></section>
+        <section id="chatPhase4" class="chat"></section>
+      </main>
+
+      <footer class="composer">
+        <textarea
+          id="promptInput"
+          class="prompt"
+          placeholder="Type a prompt... (Enter to send, Shift+Enter for newline)"
+          rows="3"
+          autocomplete="off"
+          autocapitalize="off"
+          autocorrect="off"
+          spellcheck="false"
+        ></textarea>
+        <button id="sendBtn" class="btn primary" type="button">Send</button>
+      </footer>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -11,6 +11,7 @@ services:
     container_name: ${HOST_USERNAME}-ngrok-api-container
     image: g6-ngrok-api:latest
     ports:
+      # - "127.0.0.1:${NGROK_PORT}:${NGROK_PORT}"
       - "${NGROK_PORT}:${NGROK_PORT}"
 
     # GPU support (using runtime for compatibility)
@@ -42,8 +43,9 @@ services:
     # Volúmenes (unificados)
     volumes:
       - ${REPO_PATH}/pyproject.toml:/home/root/pyproject.toml
-      - ${REPO_PATH}/api/app.py:/home/root/api/app.py
-      - ${REPO_PATH}/api/cache_model_assets.py:/home/root/api/cache_model_assets.py
+      # - ${REPO_PATH}/api/app.py:/home/root/api/app.py
+      # - ${REPO_PATH}/api/cache_model_assets.py:/home/root/api/cache_model_assets.py
+      - ${REPO_PATH}/api:/home/root/api
       - ${REPO_PATH}/rlm:/home/root/rlm
       - ${REPO_PATH}/tool_use:/home/root/tool_use
       - ${REPO_PATH}/rag:/home/root/rag

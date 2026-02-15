@@ -1,13 +1,26 @@
 .venv/
 
+# repo root
 main.py
+
+# ./api
 api/ngrok-port
 
+# ./weights
 # ignore everything under weights, recursively
 weights/**
-
+# but keep:
 !weights/sft_lora.dvc
 !weights/final_rlm_lora.dvc
-
-# but keep this one file
 !weights/.gitkeep
+
+# ./web
+# Node dependencies
+web/node_modules/
+# Runtime logs / temp files
+web/web-port
+web/*.log
+web/.cache/
+web/.npm/
+# OS/editor junk
+web/.DS_Store

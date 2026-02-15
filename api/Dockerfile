@@ -139,20 +139,16 @@ API_LOG="/tmp/api.log"
 NGROK_LOG="/tmp/ngrok.log"
 CACHE_LOG="/tmp/cache_model_assets.log"
 
-# --- NEW: stop previously running services that would cause conflicts ---
 echo "Checking for previous ngrok/port ${NGROK_PORT} listeners..."
 
-# Stop any prior ngrok in this container (prevents ERR_NGROK_334 from duplicates here)
 if pgrep -x ngrok >/dev/null 2>&1; then
   echo "Stopping existing ngrok processes..."
   pkill -x ngrok 2>/dev/null || true
 fi
 
-# If something is already listening on NGROK_PORT, stop it (likely old uvicorn)
 if ss -ltnp 2>/dev/null | grep -Eq "(:|\\])${NGROK_PORT}\\b"; then
   echo "Port ${NGROK_PORT} already in use; stopping existing listener(s)..."
   echo "Run launch_ngrok again to start a new service."
-  # Extract PIDs from ss output like users:(("uvicorn",pid=852,fd=...))
   ss -ltnp 2>/dev/null \
     | grep -E "(:|\\])${NGROK_PORT}\\b" \
     | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' \
@@ -163,11 +159,8 @@ if ss -ltnp 2>/dev/null | grep -Eq "(:|\\])${NGROK_PORT}\\b"; then
       done
 fi
 
-# Small wait to let sockets release
 sleep 0.2
-# --- END NEW ---
 
-# Ensure we are in the repository root so `python -m api.cache_model_assets` works
 REPO_DIR="${REPO_DIR:-/home/root}"
 if [[ ! -d "${REPO_DIR}/api" ]]; then
   echo "Error: REPO_DIR does not look like a valid repo root: ${REPO_DIR}" >&2
@@ -264,6 +257,45 @@ ngrok http "${NGROK_PORT}" \
   --log-level=debug \
   2>&1 | tee "${NGROK_LOG}" &
 NGROK_PID="$!"
+
+NGROK_URL_FILE="${REPO_DIR}/api/ngrok-url"
+rm -f "${NGROK_URL_FILE}" 2>/dev/null || true
+
+echo "Waiting for ngrok public URL (writing to ${NGROK_URL_FILE}) ..."
+
+for i in $(seq 1 1200); do
+  if [[ -n "${NGROK_PID}" ]] && ! kill -0 "${NGROK_PID}" >/dev/null 2>&1; then
+    echo "Error: ngrok process exited early. Dumping last logs:" >&2
+    tail -n 200 "${NGROK_LOG}" >&2 || true
+    exit 1
+  fi
+
+  ngrok_url="$(
+    curl -sS http://127.0.0.1:4040/api/tunnels \
+      | awk -F'"public_url":"' 'NF>1 {print $2; exit}' \
+      | awk -F'"' '{print $1}' \
+      | sed 's/\\u0026/\&/g' \
+      || true
+  )"
+
+  if [[ -n "${ngrok_url}" ]]; then
+    printf '%s\n' "${ngrok_url}" > "${NGROK_URL_FILE}"
+    echo "ngrok URL: ${ngrok_url}"
+    break
+  fi
+
+  if (( i % 20 == 0 )); then
+    echo "Still waiting for ngrok URL... (${i}/1200)"
+  fi
+
+  sleep 0.5
+done
+
+if [[ ! -s "${NGROK_URL_FILE}" ]]; then
+  echo "Error: ngrok URL was not obtained from the web UI." >&2
+  tail -n 200 "${NGROK_LOG}" >&2 || true
+  exit 1
+fi
 
 wait "${NGROK_PID}"
 EOF
