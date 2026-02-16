@@ -12,7 +12,7 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizerBase,
 )
-from utils import check_cwd
+from utils.paths import check_cwd
 
 from rlm.config import INFERENCE_CONFIG as CONFIG
 from rlm.config import REPO_DIR

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from utils import find_parent_with_markers
+from utils.paths import find_parent_with_markers
 
 MODEL_NAME: str = "Qwen/Qwen2.5-7B-Instruct"
 DATASET_NAME: str = "gsm8k"
@@ -15,35 +15,33 @@ REPO_DIR: Path = find_parent_with_markers(start=Path.cwd())
 
 
 SYSTEM_PROMPT: str = (
-    "ROL:\n"
-    "- You are a helpful math tutor. Solve the problem step by step.\n"
+    "ROLE:\n"
+    "You are a precise mathematical problem solver. Solve the problem step by step "
+    "and produce a minimal final answer.\n"
     "\n"
-    "USER INPUT FORMAT:\n"
-    "- The user question will always be provided between the tags "
-    "`<question>...</question>`.\n"
-    "- You must read and solve only the content contained inside these tags.\n"
-    "- Any text outside `<question>...</question>` must be ignored.\n"
+    "USER INPUT:\n"
+    "- The user question is always enclosed inside <question>...</question> tags.\n"
+    "- Ignore any text outside <question>...</question>.\n"
     "\n"
-    "RESPONSE FORMAT:\n"
-    "- The response will be structured in tag sections.\n"
-    "- Each tag section will begin with an opening tag `<section_name>`.\n"
-    "- Each tag section will conclude with a closing tag `</section_name>`.\n"
-    "- All content will be written between the opening and closing tags of a section.\n"
-    "- No content will be written outside these section tags.\n"
-    "- No nested tag sections will be created: <tag1>...</tag1><tag2>...</tagN>.\n"
+    "OUTPUT STRUCTURE:\n"
+    "- Your entire response MUST consist only of XML-like section tags.\n"
+    "- No text is allowed outside section tags. (that includes \\n)\n"
+    "- Section tags cannot be nested.\n"
     "\n"
-    "TAG SECTIONS:\n"
-    "- The response must contain exactly once each of the following clearly "
-    "differentiated tag sections (in this order):\n"
-    "    - think: <think>...</think>\n"
-    "    - answer: <answer>...</answer>\n"
-    "- The response must begin with the opening tag of the think section: `<think>`.\n"
-    "- The response must end with the closing tag of the answer section: `</answer>`.\n"
-    "- The think section will contain the reasoning required to arrive at the solution "
-    "to the posed question.\n"
-    "- The answer section will contain a single minimal value that will be validated "
-    "as a possible response to the question (a number, a letter, a fraction, ...).\n"
+    "REQUIRED SECTIONS (in exact order):\n"
+    "1) <think>...</think>\n"
+    "   - Contains the reasoning needed to solve the question.\n"
+    "2) <answer>...</answer>\n"
+    "   - Contains ONLY the final minimal result.\n"
+    "   - No explanation or extra text unless explicitly required.\n"
+    "\n"
+    "CONSTRAINTS:\n"
+    "- The response MUST begin with <think> and end with </answer>.\n"
+    "- Each required section appears exactly once.\n"
+    "- The <answer> content must be a single valid solution value "
+    "(number, fraction, expression, letter, etc.).\n"
 )
+
 
 SYSTEM_PROMPT_END: str = "\n\n-----------\n"
 

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import ast
 import json
+import math
 import re
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass
+import warnings
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -18,6 +18,12 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from tool_use.config import INFERENCE_CONFIG as CONFIG
 from tool_use.config import REPO_DIR
+from tool_use.tool_handler import (
+    ensure_response_contains_answer,
+    insert_tool_desciptions_in_system_propt,
+    parse_and_execute_tool_call,
+)
+from tool_use.tools import TOOL_DICT
 
 
 @dataclass(frozen=True)
@@ -26,7 +32,7 @@ class QAItem:
 
     Args:
         question: User question string.
-        answer: Ground-truth answer (raw; later reduced to its last digit run).
+        answer: Ground-truth answer (raw).
     """
 
     question: str
@@ -40,7 +46,7 @@ def _build_bnb_config(*, use_4bit: bool) -> BitsAndBytesConfig | None:
         use_4bit: Whether to enable 4-bit NF4 quantization.
 
     Returns:
-        A BitsAndBytesConfig if enabled, else None.
+        BitsAndBytesConfig if enabled, else None.
     """
     if not use_4bit:
         return None
@@ -54,36 +60,21 @@ def _build_bnb_config(*, use_4bit: bool) -> BitsAndBytesConfig | None:
 
 
 def _align_special_tokens(*, model: Any, tokenizer: Any, cfg: CONFIG) -> None:
-    """Align model and generation configs with tokenizer special tokens.
-
-    Args:
-        model: HF model with config and generation_config.
-        tokenizer: HF tokenizer with pad/eos token ids.
-        cfg: Shared configuration for generation hyperparameters.
-    """
+    """Align model and generation configs with tokenizer special tokens."""
     model.config.pad_token_id = tokenizer.pad_token_id
     model.generation_config.pad_token_id = tokenizer.pad_token_id
     model.generation_config.eos_token_id = tokenizer.eos_token_id
 
     model.generation_config.do_sample = bool(cfg.do_sample)
-
     if cfg.temperature is not None:
         model.generation_config.temperature = float(cfg.temperature)
     if cfg.top_p is not None:
         model.generation_config.top_p = float(cfg.top_p)
-
     model.generation_config.top_k = None
 
 
 def _load_tokenizer(*, cfg: CONFIG) -> Any:
-    """Load the tokenizer once (shared by all models).
-
-    Args:
-        cfg: Shared configuration.
-
-    Returns:
-        HF tokenizer.
-    """
+    """Load tokenizer."""
     tokenizer: Any = AutoTokenizer.from_pretrained(
         pretrained_model_name_or_path=cfg.model_name,
         use_fast=True,
@@ -94,15 +85,7 @@ def _load_tokenizer(*, cfg: CONFIG) -> Any:
 
 
 def _load_base_model(*, cfg: CONFIG, tokenizer: Any) -> torch.nn.Module:
-    """Load a fresh base model for inference.
-
-    Args:
-        cfg: Shared configuration.
-        tokenizer: Tokenizer whose special tokens must be aligned.
-
-    Returns:
-        Base model (no LoRA attached).
-    """
+    """Load base model for inference."""
     bnb_config: BitsAndBytesConfig | None = _build_bnb_config(use_4bit=cfg.use_4bit)
 
     base_model: Any = AutoModelForCausalLM.from_pretrained(
@@ -117,22 +100,7 @@ def _load_base_model(*, cfg: CONFIG, tokenizer: Any) -> torch.nn.Module:
 
 
 def _resolve_adapter_dir(*, path: Path) -> Path:
-    """Resolve an adapter directory from a user-provided path.
-
-    Accepts either:
-      - a directory containing adapter_config.json, or
-      - a file inside such a directory.
-
-    Args:
-        path: Candidate adapter path.
-
-    Returns:
-        A resolved adapter directory path.
-
-    Raises:
-        FileNotFoundError: If the path does not exist.
-        ValueError: If a path exists but no adapter_config.json can be found.
-    """
+    """Resolve an adapter directory from a user-provided path."""
     p: Path = path.expanduser().resolve()
     if not p.exists():
         raise FileNotFoundError(f"Adapter path not found: {p}")
@@ -153,21 +121,9 @@ def _resolve_adapter_dir(*, path: Path) -> Path:
 
 
 def _load_adapted_model(
-    *,
-    cfg: CONFIG,
-    tokenizer: Any,
-    adapter_dir: Path,
+    *, cfg: CONFIG, tokenizer: Any, adapter_dir: Path
 ) -> torch.nn.Module:
-    """Load a fresh base model and attach a LoRA adapter on top of it.
-
-    Args:
-        cfg: Shared configuration.
-        tokenizer: Tokenizer whose special tokens must be aligned.
-        adapter_dir: Directory containing adapter_config.json and adapter weights.
-
-    Returns:
-        A PeftModel instance with the adapter loaded.
-    """
+    """Load base model and attach LoRA adapter."""
     fresh_base: torch.nn.Module = _load_base_model(cfg=cfg, tokenizer=tokenizer)
     adapted: Any = PeftModel.from_pretrained(
         model=fresh_base,
@@ -181,15 +137,7 @@ def _load_adapted_model(
 
 
 def _render_chat_prompt(*, messages: list[dict[str, str]], tokenizer: Any) -> str:
-    """Render a chat prompt using the model's chat template.
-
-    Args:
-        messages: Chat messages (role/content) to render.
-        tokenizer: HF tokenizer providing apply_chat_template.
-
-    Returns:
-        Rendered string prompt.
-    """
+    """Render chat prompt with model template."""
     return tokenizer.apply_chat_template(
         conversation=messages,
         tokenize=False,
@@ -204,17 +152,7 @@ def _generate_once(
     tokenizer: Any,
     cfg: CONFIG,
 ) -> str:
-    """Generate a completion for the given messages.
-
-    Args:
-        messages: Chat history.
-        model: Loaded model.
-        tokenizer: Tokenizer.
-        cfg: Shared configuration (includes generation limits).
-
-    Returns:
-        Decoded generation (completion only).
-    """
+    """Generate completion for the given messages."""
     full_prompt: str = _render_chat_prompt(messages=messages, tokenizer=tokenizer)
     enc: Any = tokenizer(full_prompt, return_tensors="pt", truncation=True)
 
@@ -241,119 +179,6 @@ def _generate_once(
     prompt_len: int = int(input_ids.shape[1])
     gen_ids: torch.Tensor = out[0, prompt_len:]
     return tokenizer.decode(gen_ids, skip_special_tokens=True)
-
-
-def _extract_answer_section(*, text: str) -> str:
-    """Extract the content inside the <answer>...</answer> section.
-
-    Args:
-        text: Model completion text.
-
-    Returns:
-        The extracted answer content if tags are found, otherwise the original text.
-    """
-    m: re.Match[str] | None = re.search(
-        pattern=r"<answer>\s*(.*?)\s*</answer>",
-        string=text,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    if m is None:
-        return text
-    return m.group(1).strip()
-
-
-def _extract_last_digit_run(*, text: str) -> str:
-    """Extract the last consecutive run of digits from a string.
-
-    Args:
-        text: Model output (or ground-truth answer) as a string.
-
-    Returns:
-        The last substring matching r"\\d+", or "?" if none is found.
-    """
-    matches: list[str] = re.findall(pattern=r"\d+", string=text)
-    if len(matches) == 0:
-        return "?"
-    return matches[-1]
-
-
-def _compute_accuracy(*, correct: list[str], pred: list[str]) -> float:
-    """Compute accuracy as a fraction in [0, 1]."""
-    assert len(correct) == len(pred)
-    if len(correct) == 0:
-        return 0.0
-    hits: int = sum((c == p) for c, p in zip(correct, pred, strict=True))
-    return float(hits) / float(len(correct))
-
-
-def _make_unique_names(*, base_names: list[str]) -> list[str]:
-    """Make adapter names unique by appending '_k' to duplicates."""
-    counts: dict[str, int] = {}
-    out: list[str] = []
-    for name in base_names:
-        seen: int = counts.get(name, 0) + 1
-        counts[name] = seen
-        if base_names.count(name) == 1:
-            out.append(name)
-        else:
-            out.append(f"{name}_{seen}")
-    return out
-
-
-def _print_answer_table(
-    *,
-    rows: list[int],
-    correct: list[str],
-    base_pred: list[str],
-    adapter_preds: list[list[str]],
-    adapter_names: list[str],
-) -> None:
-    """Print an ASCII table with correct + predicted answers for many adapters."""
-    assert len(rows) == len(correct) == len(base_pred)
-    assert len(adapter_preds) == len(adapter_names)
-    for preds in adapter_preds:
-        assert len(preds) == len(rows)
-
-    headers: list[str] = ["#", "correct", "base", *adapter_names]
-
-    columns: list[list[str]] = []
-    columns.append([str(r) for r in rows])
-    columns.append(correct)
-    columns.append(base_pred)
-    for preds in adapter_preds:
-        columns.append(preds)
-
-    widths: list[int] = []
-    for header, col in zip(headers, columns, strict=True):
-        w: int = max(len(header), max((len(x) for x in col), default=1))
-        widths.append(max(w, 3))
-
-    def _fmt_row(*, items: list[str]) -> str:
-        parts: list[str] = []
-        for item, w in zip(items, widths, strict=True):
-            parts.append(f"{item:<{w}}")
-        return " | ".join(parts)
-
-    sep: str = "-+-".join("-" * w for w in widths)
-
-    print("\n=== SUMMARY TABLE ===")
-    print(_fmt_row(items=headers))
-    print(sep)
-
-    for i in range(len(rows)):
-        row_items: list[str] = [columns[j][i] for j in range(len(columns))]
-        print(_fmt_row(items=row_items))
-
-    base_acc: float = _compute_accuracy(correct=correct, pred=base_pred)
-    adapter_accs: list[float] = [
-        _compute_accuracy(correct=correct, pred=preds) for preds in adapter_preds
-    ]
-
-    acc_cells: list[str] = ["acc", "", f"{base_acc:>4.2f}"]
-    acc_cells.extend(f"{a:>4.2f}" for a in adapter_accs)
-
-    print(sep)
-    print(_fmt_row(items=acc_cells))
 
 
 def _load_questions(*, questions_path: Path) -> list[QAItem]:
@@ -399,24 +224,37 @@ def _write_answers_json(
     *,
     answers_path: Path,
     items: list[QAItem],
-    base_out: list[str],
-    adapter_outs: list[list[str]],
+    base_full: list[str],
+    base_parsed_answer: list[str],
+    adapter_full: list[list[str]],
+    adapter_parsed_answer: list[list[str]],
     adapter_names: list[str],
 ) -> None:
-    """Write per-question outputs (base + adapters) to a JSON file."""
-    assert len(items) == len(base_out)
-    assert len(adapter_outs) == len(adapter_names)
-    for outs in adapter_outs:
+    """Write outputs to JSON with the required contract.
+
+    Contract:
+      - non-parsed fields: full think-tools-answer with UNFORMATTED <id=...> in answer
+      - parsed_* fields: ONLY the <answer>...</answer> section with formatted <id=...>
+    """
+    assert len(items) == len(base_full) == len(base_parsed_answer)
+    assert len(adapter_full) == len(adapter_names) == len(adapter_parsed_answer)
+    for outs, pars in zip(adapter_full, adapter_parsed_answer, strict=True):
         assert len(outs) == len(items)
+        assert len(pars) == len(items)
 
     out_data: list[dict[str, Any]] = []
     for i, item in enumerate(items):
         row: dict[str, Any] = {
             "question": item.question,
-            "base_output": base_out[i],
+            "base_output": base_full[i],
+            "parsed_base_output": base_parsed_answer[i],
         }
-        for name, outs in zip(adapter_names, adapter_outs, strict=True):
-            row[f"{name}_output"] = outs[i]
+        for name, outs, pars in zip(
+            adapter_names, adapter_full, adapter_parsed_answer, strict=True
+        ):
+            key_out: str = f"{name}_output"
+            row[key_out] = outs[i]
+            row[f"parsed_{key_out}"] = pars[i]
         out_data.append(row)
 
     p: Path = answers_path.expanduser().resolve()
@@ -424,266 +262,242 @@ def _write_answers_json(
     p.write_text(json.dumps(out_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _safe_calculator(*, expression: str) -> str:
-    """Evaluate a simple arithmetic expression safely."""
-    allowed: set[str] = set("0123456789+-*/(). ")
-    bad: list[str] = [c for c in expression if c not in allowed]
-    if bad:
-        uniq: str = "".join(sorted(set(bad)))
-        return f"Error: Disallowed characters: {uniq}"
-
-    try:
-        node: ast.AST = ast.parse(expression, mode="eval")
-        for sub in ast.walk(node):
-            if isinstance(sub, (ast.Call, ast.Attribute, ast.Name, ast.Subscript)):
-                return "Error: Unsupported expression."
-        value: Any = eval(
-            compile(node, filename="<expr>", mode="eval"),
-            {"__builtins__": {}},
-        )
-        return str(value)
-    except Exception as exc:
-        return f"Error calculating: {exc}"
-
-
-def _default_tool_registry() -> dict[str, Callable[..., str]]:
-    """Create a minimal tool registry."""
-
-    def _multiplication(*, factor1: Any, factor2: Any) -> str:
-        try:
-            a: float = float(factor1)
-            b: float = float(factor2)
-            out: float = a * b
-            if out.is_integer():
-                return str(int(out))
-            return str(out)
-        except Exception as exc:
-            return f"Error running tool 'multiplication': {exc}"
-
-    def _mutation(*, value: Any, exponent: Any) -> str:
-        # The adapter seems to use mutation(value=2, exponent=3) to mean 2 * 3.
-        try:
-            a: float = float(value)
-            b: float = float(exponent)
-            out: float = a * b
-            if out.is_integer():
-                return str(int(out))
-            return str(out)
-        except Exception as exc:
-            return f"Error running tool 'mutation': {exc}"
-
-    return {
-        "calculator": lambda **kwargs: _safe_calculator(
-            expression=str(kwargs.get("expression", ""))
-        ),
-        "multiplication": lambda **kwargs: _multiplication(
-            factor1=kwargs.get("factor1"),
-            factor2=kwargs.get("factor2"),
-        ),
-        "mutation": lambda **kwargs: _mutation(
-            value=kwargs.get("value"),
-            exponent=kwargs.get("exponent"),
-        ),
-    }
-
-
-def _replace_id_refs(*, text: str, tool_outputs: dict[int, str]) -> str:
-    """Replace <id=N> occurrences using already-produced tool outputs."""
-    id_ref_re: re.Pattern[str] = re.compile(
-        r"<id\s*=\s*(?P<id>\d+)\s*>",
-        flags=re.IGNORECASE,
-    )
-
-    def _sub(m: re.Match[str]) -> str:
-        tid: int = int(m.group("id"))
-        return tool_outputs.get(tid, m.group(0))
-
-    return id_ref_re.sub(_sub, text)
-
-
-def _parse_args_kv_block(*, src: str) -> dict[str, Any]:
-    """Parse args like: factor1=3, factor2=4, expression='<id=1> + <id=2>'.
-
-    Args:
-        src: Content between braces, without surrounding '{' and '}'.
-
-    Returns:
-        Dict with parsed primitive values.
-    """
-    args: dict[str, Any] = {}
-
-    parts: list[str] = re.split(
-        r",(?=(?:[^'\"\\]*(?:\\.|'[^']*'|\"[^\"]*\"))*[^'\"\\]*$)",
-        src,
-    )
-    for raw in parts:
-        part: str = raw.strip()
-        if not part or "=" not in part:
-            continue
-
-        k_raw: str
-        v_raw: str
-        k_raw, v_raw = part.split("=", 1)
-        key: str = k_raw.strip()
-        val_s: str = v_raw.strip()
-
-        if (val_s.startswith("'") and val_s.endswith("'")) or (
-            val_s.startswith('"') and val_s.endswith('"')
-        ):
-            args[key] = val_s[1:-1]
-            continue
-
-        try:
-            if "." in val_s:
-                args[key] = float(val_s)
-            else:
-                args[key] = int(val_s)
-            continue
-        except Exception:
-            pass
-
-        args[key] = val_s
-
-    return args
-
-
-def _extract_think_blocks(*, text: str) -> list[str]:
-    """Extract all <think>...</think> blocks."""
-    blocks: list[str] = re.findall(
-        pattern=r"<think>\s*(.*?)\s*</think>",
+def _extract_answer_inner_text(*, text: str) -> str | None:
+    """Extract inner text inside <answer>...</answer>."""
+    m: re.Match[str] | None = re.search(
+        pattern=r"<answer>\s*(.*?)\s*</answer>",
         string=text,
         flags=re.DOTALL | re.IGNORECASE,
     )
-    return [b.strip() for b in blocks if b.strip()]
+    if m is None:
+        return None
+    return m.group(1).strip()
 
 
-def _find_tool_calls(*, think_text: str) -> list[tuple[int, str, dict[str, Any]]]:
-    """Find tool calls of the form: <tool id=1 name=calculator args={...}>.
+def _clean_math_expression(*, text: str) -> str:
+    """Keep only math characters and normalize implicit multiplication."""
+    allowed: set[str] = set("0123456789/.")
+    cleaned: str = "".join([c for c in text if c in allowed]).strip()
+    if not cleaned:
+        return ""
 
-    Args:
-        think_text: Content inside a single <think>...</think> block.
+    cleaned = re.sub(pattern=r"(\d)\s*\(", repl=r"\1*(", string=cleaned)
+    cleaned = re.sub(pattern=r"\)\s*(\d)", repl=r")*\1", string=cleaned)
+    cleaned = re.sub(pattern=r"\)\s*\(", repl=r")*(", string=cleaned)
 
-    Returns:
-        List of (tool_id, tool_name, tool_args_dict).
-    """
-    tool_re: re.Pattern[str] = re.compile(
-        r"<tool\s+id\s*=\s*(?P<id>\d+)\s+name\s*=\s*(?P<name>[A-Za-z0-9_\-]+)\s+"
-        r"args\s*=\s*\{(?P<args>.*?)\}\s*>",
-        flags=re.DOTALL | re.IGNORECASE,
+    return cleaned.strip()
+
+
+def _safe_eval_math(*, expr: str) -> float | None:
+    """Evaluate a cleaned math expression with eval, treating warnings as failure."""
+    expr_s: str = expr.strip()
+    if not expr_s:
+        return None
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter(action="error", category=SyntaxWarning)
+            value_any: Any = eval(expr_s, globals={"__builtins__": {}}, locals={})
+        value: float = float(value_any)
+        if not math.isfinite(value):
+            return None
+        return value
+    except Exception:
+        return None
+
+
+def _parse_number_from_text(*, text: str) -> float | None:
+    """Parse numeric value from raw text."""
+    cleaned: str = _clean_math_expression(text=text)
+    value: float | None = _safe_eval_math(expr=cleaned)
+    if value is not None:
+        return value
+
+    m: re.Match[str] | None = re.search(
+        pattern=r"[-+]?\d+(?:\.\d+)?",
+        string=text.replace(",", "."),
     )
+    if m is None:
+        return None
 
-    calls: list[tuple[int, str, dict[str, Any]]] = []
-    for m in tool_re.finditer(think_text):
-        tid: int = int(m.group("id"))
-        name: str = str(m.group("name"))
-        args_body: str = str(m.group("args")).strip()
-        args: dict[str, Any] = _parse_args_kv_block(src=args_body)
-        calls.append((tid, name, args))
-    return calls
+    try:
+        v: float = float(m.group(0))
+        if not math.isfinite(v):
+            return None
+        return v
+    except Exception:
+        return None
 
 
-def _run_tool_loop(
+def _extract_validated_numeric_answer(*, parsed_answer_only: str) -> float | None:
+    """Extract numeric value from parsed <answer>...</answer> only."""
+    inner: str | None = _extract_answer_inner_text(text=parsed_answer_only)
+    if inner is None:
+        return None
+    return _parse_number_from_text(text=inner)
+
+
+def _answers_close(*, pred: float | None, gold: float | None, eps: float) -> bool:
+    """Check numeric closeness with epsilon."""
+    if pred is None or gold is None:
+        return False
+    return abs(pred - gold) <= eps
+
+
+def _make_unique_names(*, base_names: list[str]) -> list[str]:
+    """Make adapter names unique by appending '_k' to duplicates."""
+    counts: dict[str, int] = {}
+    out: list[str] = []
+    for name in base_names:
+        seen: int = counts.get(name, 0) + 1
+        counts[name] = seen
+        if base_names.count(name) == 1:
+            out.append(name)
+        else:
+            out.append(f"{name}_{seen}")
+    return out
+
+
+def _print_answer_table(
+    *,
+    rows: list[int],
+    gold_vals: list[float | None],
+    base_vals: list[float | None],
+    adapter_vals: list[list[float | None]],
+    adapter_names: list[str],
+    eps: float,
+) -> None:
+    """Print an ASCII table with gold + predicted numeric values."""
+    assert len(rows) == len(gold_vals) == len(base_vals)
+    assert len(adapter_vals) == len(adapter_names)
+    for preds in adapter_vals:
+        assert len(preds) == len(rows)
+
+    def _fmt(v: float | None) -> str:
+        if v is None:
+            return "?"
+        if float(v).is_integer():
+            return str(int(v))
+        return f"{v:.6g}"
+
+    headers: list[str] = ["#", "correct", "base", *adapter_names]
+
+    columns: list[list[str]] = []
+    columns.append([str(r) for r in rows])
+    columns.append([_fmt(v) for v in gold_vals])
+    columns.append([_fmt(v) for v in base_vals])
+    for preds in adapter_vals:
+        columns.append([_fmt(v) for v in preds])
+
+    widths: list[int] = []
+    for header, col in zip(headers, columns, strict=True):
+        w: int = max(len(header), max((len(x) for x in col), default=1))
+        widths.append(max(w, 3))
+
+    def _fmt_row(*, items: list[str]) -> str:
+        parts: list[str] = []
+        for item, w in zip(items, widths, strict=True):
+            parts.append(f"{item:<{w}}")
+        return " | ".join(parts)
+
+    sep: str = "-+-".join("-" * w for w in widths)
+
+    print("\n=== SUMMARY TABLE ===")
+    print(_fmt_row(items=headers))
+    print(sep)
+    for i in range(len(rows)):
+        row_items: list[str] = [columns[j][i] for j in range(len(columns))]
+        print(_fmt_row(items=row_items))
+
+    base_hits: int = sum(
+        _answers_close(pred=p, gold=g, eps=eps) for g, p in zip(gold_vals, base_vals)
+    )
+    base_acc: float = float(base_hits) / float(len(rows)) if rows else 0.0
+
+    adapter_accs: list[float] = []
+    for preds in adapter_vals:
+        hits: int = sum(
+            _answers_close(pred=p, gold=g, eps=eps) for g, p in zip(gold_vals, preds)
+        )
+        adapter_accs.append(float(hits) / float(len(rows)) if rows else 0.0)
+
+    acc_cells: list[str] = ["acc", "", f"{base_acc:>4.2f}"]
+    acc_cells.extend(f"{a:>4.2f}" for a in adapter_accs)
+
+    print(sep)
+    print(_fmt_row(items=acc_cells))
+
+
+def _run_tool_use_inference(
     *,
     question: str,
     model: torch.nn.Module,
     tokenizer: Any,
     cfg: CONFIG,
-    tool_registry: dict[str, Callable[..., str]],
-) -> str:
-    """Run up to cfg.max_calls tool iterations for a single question.
+) -> tuple[str, str]:
+    """Run tool-loop inference.
 
-    Important:
-        If the model emits tool calls and an <answer> in the same completion,
-        execute tools and replace <id=...> inside <answer> before returning.
+    Returns:
+        (full_output_with_unformatted_answer, parsed_answer_only_formatted)
     """
-    wrapped: str = f"<question>{question}</question>"
+    wrapped_question: str = f"<question>{question}</question>"
     messages: list[dict[str, str]] = [
         {"role": "system", "content": cfg.system_prompt},
-        {"role": "user", "content": wrapped},
+        {"role": "user", "content": wrapped_question},
     ]
 
-    tool_outputs: dict[int, str] = {}
-    last_completion: str = ""
+    used_tool_ids: set[int] = set()
+    global_outputs: dict[int, str] = {}
+
+    last_raw_full: str = ""
+    last_parsed_answer_only: str = "<answer>Error: missing <answer> section</answer>"
 
     for _ in range(int(cfg.max_calls)):
-        completion: str = _generate_once(
+        assistant_out: str = _generate_once(
             messages=messages,
             model=model,
             tokenizer=tokenizer,
             cfg=cfg,
         )
-        last_completion = completion
 
-        think_blocks: list[str] = _extract_think_blocks(text=completion)
+        should_continue: bool
+        prompt_appendix: str
+        raw_full: str
+        _formatted_full: str
+        parsed_answer_only: str
 
-        all_calls: list[tuple[int, str, dict[str, Any]]] = []
-        for tb in think_blocks:
-            all_calls.extend(_find_tool_calls(think_text=tb))
-
-        if len(all_calls) > 0:
-            for tid, name, args in all_calls:
-                args_fixed: dict[str, Any] = {}
-                for k, v in args.items():
-                    if isinstance(v, str):
-                        args_fixed[k] = _replace_id_refs(
-                            text=v,
-                            tool_outputs=tool_outputs,
-                        )
-                    else:
-                        args_fixed[k] = v
-
-                fn: Callable[..., str] | None = tool_registry.get(name)
-                if fn is None:
-                    out_str: str = f"Error: Unknown tool '{name}'."
-                else:
-                    try:
-                        out_str = str(fn(**args_fixed))
-                    except Exception as exc:
-                        out_str = f"Error running tool '{name}': {exc}"
-
-                tool_outputs[int(tid)] = out_str
-
-        has_answer: bool = (
-            re.search(
-                pattern=r"<answer>\s*.*?\s*</answer>",
-                string=completion,
-                flags=re.DOTALL | re.IGNORECASE,
-            )
-            is not None
+        (
+            should_continue,
+            prompt_appendix,
+            raw_full,
+            _formatted_full,
+            parsed_answer_only,
+        ) = parse_and_execute_tool_call(
+            model_output=assistant_out,
+            tool_dict=TOOL_DICT,
+            max_calls=int(cfg.max_calls),
+            used_tool_ids=used_tool_ids,
+            global_outputs=global_outputs,
         )
 
-        if has_answer:
-            return _replace_id_refs(text=completion, tool_outputs=tool_outputs)
+        last_raw_full = raw_full
+        last_parsed_answer_only = parsed_answer_only
 
-        if len(all_calls) == 0:
-            return completion
+        if not should_continue:
+            last_raw_full = ensure_response_contains_answer(full_prompt=last_raw_full)
+            last_parsed_answer_only = ensure_response_contains_answer(
+                full_prompt=last_parsed_answer_only
+            )
+            return last_raw_full, last_parsed_answer_only
 
-        messages.append({"role": "assistant", "content": completion})
+        messages.append({"role": "assistant", "content": assistant_out})
+        messages.append({"role": "user", "content": prompt_appendix})
 
-        tools_payload_lines: list[str] = ["<tools>", "{"]
-        for tid, name, args in all_calls:
-            out_str2: str = tool_outputs.get(int(tid), "")
-
-            tools_payload_lines.append(f"    {tid}: {{")
-            tools_payload_lines.append(f"        tool: '{name}',")
-            tools_payload_lines.append("        args: {")
-            for ak, av in args.items():
-                av_s: str = str(
-                    _replace_id_refs(text=str(av), tool_outputs=tool_outputs)
-                    if isinstance(av, str)
-                    else av
-                )
-                tools_payload_lines.append(f"            '{ak}': '{av_s}'")
-            tools_payload_lines.append("        }")
-            tools_payload_lines.append(f"        output: '{out_str2}'")
-            tools_payload_lines.append("    },")
-
-        tools_payload_lines.append("}")
-        tools_payload_lines.append("</tools>")
-
-        messages.append({"role": "user", "content": "\n".join(tools_payload_lines)})
-
-    return _replace_id_refs(text=last_completion, tool_outputs=tool_outputs)
+    last_raw_full = ensure_response_contains_answer(full_prompt=last_raw_full)
+    last_parsed_answer_only = ensure_response_contains_answer(
+        full_prompt=last_parsed_answer_only
+    )
+    return last_raw_full, last_parsed_answer_only
 
 
 def main(
@@ -691,9 +505,19 @@ def main(
     adapter_paths: list[Path],
     questions_path: Path,
     answers_path: Path,
+    eps: float = 1e-3,
 ) -> None:
-    """Compare base model vs multiple adapter models on a tool-use questions set."""
-    cfg: CONFIG = CONFIG()
+    """Compare base model vs adapter models on a tool-use question set."""
+    cfg_base: CONFIG = CONFIG()
+
+    descriptions: dict[str, str] = {
+        tool_name: str(tool_meta["description"])
+        for tool_name, tool_meta in TOOL_DICT.items()
+    }
+    tool_augmented_system_prompt: str = insert_tool_desciptions_in_system_propt(
+        descriptions=descriptions
+    )
+    cfg: CONFIG = replace(cfg_base, system_prompt=tool_augmented_system_prompt)
 
     tokenizer: Any = _load_tokenizer(cfg=cfg)
     base_model: torch.nn.Module = _load_base_model(cfg=cfg, tokenizer=tokenizer)
@@ -709,15 +533,16 @@ def main(
 
     items: list[QAItem] = _load_questions(questions_path=questions_path)
 
-    tool_registry: dict[str, Callable[..., str]] = _default_tool_registry()
-
     rows: list[int] = []
-    correct: list[str] = []
-    base_pred: list[str] = []
-    adapter_preds: list[list[str]] = [[] for _ in adapted_models]
+    gold_vals: list[float | None] = []
+    base_vals: list[float | None] = []
+    adapter_vals: list[list[float | None]] = [[] for _ in adapted_models]
 
-    base_outputs: list[str] = []
-    adapter_outputs: list[list[str]] = [[] for _ in adapted_models]
+    base_full_outputs: list[str] = []
+    base_parsed_answers: list[str] = []
+
+    adapter_full_outputs: list[list[str]] = [[] for _ in adapted_models]
+    adapter_parsed_answers: list[list[str]] = [[] for _ in adapted_models]
 
     iterable: Any = tqdm(
         enumerate(items, start=1),
@@ -729,46 +554,51 @@ def main(
     for i, item in iterable:
         rows.append(i)
 
-        correct_ans: str = _extract_last_digit_run(text=item.answer)
-        correct.append(correct_ans)
+        gold_val: float | None = _parse_number_from_text(text=item.answer)
+        gold_vals.append(gold_val)
 
-        base_out: str = _run_tool_loop(
+        base_full, base_parsed = _run_tool_use_inference(
             question=item.question,
             model=base_model,
             tokenizer=tokenizer,
             cfg=cfg,
-            tool_registry=tool_registry,
         )
-        base_outputs.append(base_out)
-        base_ans: str = _extract_answer_section(text=base_out)
-        base_pred.append(_extract_last_digit_run(text=base_ans))
+        base_full_outputs.append(base_full)
+        base_parsed_answers.append(base_parsed)
+        base_vals.append(
+            _extract_validated_numeric_answer(parsed_answer_only=base_parsed)
+        )
 
         for j, model in enumerate(adapted_models):
-            out: str = _run_tool_loop(
+            full_out, parsed_ans = _run_tool_use_inference(
                 question=item.question,
                 model=model,
                 tokenizer=tokenizer,
                 cfg=cfg,
-                tool_registry=tool_registry,
             )
-            adapter_outputs[j].append(out)
-            ans: str = _extract_answer_section(text=out)
-            adapter_preds[j].append(_extract_last_digit_run(text=ans))
+            adapter_full_outputs[j].append(full_out)
+            adapter_parsed_answers[j].append(parsed_ans)
+            adapter_vals[j].append(
+                _extract_validated_numeric_answer(parsed_answer_only=parsed_ans)
+            )
 
     _write_answers_json(
         answers_path=answers_path,
         items=items,
-        base_out=base_outputs,
-        adapter_outs=adapter_outputs,
+        base_full=base_full_outputs,
+        base_parsed_answer=base_parsed_answers,
+        adapter_full=adapter_full_outputs,
+        adapter_parsed_answer=adapter_parsed_answers,
         adapter_names=adapter_names,
     )
 
     _print_answer_table(
         rows=rows,
-        correct=correct,
-        base_pred=base_pred,
-        adapter_preds=adapter_preds,
+        gold_vals=gold_vals,
+        base_vals=base_vals,
+        adapter_vals=adapter_vals,
         adapter_names=adapter_names,
+        eps=eps,
     )
     print(f"\nWrote paired answers to: {answers_path.expanduser().resolve()}")
     print("Done: base vs adapters tool-use evaluation completed.")

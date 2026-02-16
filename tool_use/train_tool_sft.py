@@ -12,7 +12,7 @@ from datasets import Dataset, load_dataset
 from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import SFTConfig, SFTTrainer
-from utils import check_cwd
+from utils.paths import check_cwd
 
 from tool_use.config import REPO_DIR
 from tool_use.config import SFT_CONFIG as CONFIG

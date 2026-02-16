@@ -1,4 +1,4 @@
-# train_grpo.py
+# rlm/train_grpo.py
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from peft import (
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from utils import check_cwd
+from utils.paths import check_cwd
 
 from rlm.config import GRPO_CONFIG, REPO_DIR
 
@@ -164,13 +164,6 @@ def _len_ratio_score(*, think_text: str | None, answer_text: str | None) -> floa
 def _naturalness_score(*, text: str) -> float:
     """Heuristic naturalness score in [0, 1] for reasoning text.
 
-    This is a fast proxy to penalize low-information padding and repetitions.
-
-    Signals:
-      - Compression ratio (zlib): repetitive text compresses better -> lower score.
-      - Lexical diversity: unique words / total words.
-      - Repetition penalty: common n-gram repetitions and long character runs.
-
     Args:
         text: The reasoning text (ideally content inside <think>...</think>).
 
@@ -240,38 +233,80 @@ def _naturalness_score(*, text: str) -> float:
     return max(0.0, min(1.0, score))
 
 
-def _extract_final_int(*, text: str) -> int | None:
-    """Extract the last integer substring from text.
+def _clean_math_expression(*, text: str) -> str:
+    """Keep only a restricted set of math characters.
 
     Args:
-        text: Input string.
+        text: Raw answer string.
 
     Returns:
-        Last parsed integer if any, else None.
+        Cleaned string containing only allowed characters.
     """
-    matches: list[str] = re.findall(pattern=r"[-+]?\d+", string=text)
-    if not matches:
+    allowed: set[str] = set("0123456789+-*/().")
+    cleaned_chars: list[str] = [c for c in text if c in allowed]
+    return "".join(cleaned_chars).strip()
+
+
+def _safe_eval_math(*, expr: str) -> float | None:
+    """Safely evaluate a math expression restricted to basic operators.
+
+    Args:
+        expr: Cleaned expression (should contain only allowed characters).
+
+    Returns:
+        Evaluated float value, or None if evaluation fails.
+    """
+    s: str = expr.strip()
+    if not s:
         return None
+
     try:
-        return int(matches[-1])
-    except ValueError:
+        value: Any = eval(s, {"__builtins__": {}}, {})
+    except Exception:
         return None
+
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _parse_number_from_text(*, text: str) -> float | None:
+    """Parse a numeric value from a raw text via cleaning + eval.
+
+    Args:
+        text: Raw text potentially containing a math expression.
+
+    Returns:
+        Parsed float value, or None.
+    """
+    cleaned: str = _clean_math_expression(text=text)
+    return _safe_eval_math(expr=cleaned)
+
+
+def _is_close(*, pred: float | None, gt: float | None, eps: float) -> bool:
+    """Return True if pred and gt are within eps.
+
+    Args:
+        pred: Predicted numeric value.
+        gt: Ground-truth numeric value.
+        eps: Absolute tolerance.
+
+    Returns:
+        True if both are not None and abs(pred-gt) <= eps.
+    """
+    if pred is None or gt is None:
+        return False
+    return abs(pred - gt) <= float(eps)
 
 
 def reward_function(*, generated_text: str, ground_truth_answer: str) -> float:
     """Compute a shaped reward for GSM8K with formatting + naturalness bonuses.
 
-    Rewards:
-      +0.50 correct final answer
-      +0.25 structure compliance (sum of subparts):
-        +0.05 has <think>...</think>
-        +0.05 has <answer>...</answer>
-        +0.05 no text outside tag scopes
-        +0.10 tags appear in strict order:
-              <think> -> </think> -> <answer> -> </answer>
-      +0.10 length ratio:
-        len(think) / (len(think) + len(answer))
-      +0.15 naturalness heuristic score on think content
+    The "correctness" part now compares numeric values via:
+      - extract <answer>...</answer>
+      - clean to allowed math chars
+      - eval
+      - abs(pred - gt) <= eps
 
     Args:
         generated_text: Model completion (generated continuation).
@@ -281,20 +316,19 @@ def reward_function(*, generated_text: str, ground_truth_answer: str) -> float:
         Total reward in [0, 1] (clamped).
     """
     reward: float = 0.0
+    eps: float = 1e-6
 
     think_text: str | None = _extract_tag_content(text=generated_text, tag="think")
     answer_text: str | None = _extract_tag_content(text=generated_text, tag="answer")
 
-    pred: int | None
+    pred_val: float | None = None
     if answer_text is not None:
-        pred = _extract_final_int(text=answer_text)
-    else:
-        pred = _extract_final_int(text=generated_text)
+        pred_val = _parse_number_from_text(text=answer_text)
 
     _, gt_final_str = _parse_gsm8k_answer(answer_field=ground_truth_answer)
-    gt: int | None = _extract_final_int(text=gt_final_str)
+    gt_val: float | None = _parse_number_from_text(text=gt_final_str)
 
-    if pred is not None and gt is not None and pred == gt:
+    if _is_close(pred=pred_val, gt=gt_val, eps=eps):
         reward += 0.50
 
     has_think: bool = _has_think_block(text=generated_text)
@@ -639,6 +673,8 @@ def main(*, adapter_path: Path | None = None) -> None:
     )
     policy_model.train()
 
+    trainable_n: int
+    total_n: int
     trainable_n, total_n = _count_trainable_params(model=policy_model)
     print(
         f"Trainable params: {trainable_n} / {total_n} "
@@ -803,6 +839,8 @@ def main(*, adapter_path: Path | None = None) -> None:
                 )
                 adv_detached: torch.Tensor = advantages.detach()
 
+                sum_logp_pi: torch.Tensor
+                n_gen: torch.Tensor
                 sum_logp_pi, n_gen = _gather_generated_logp_stats(
                     model=policy_model,
                     input_ids=group_input_ids,
@@ -810,6 +848,7 @@ def main(*, adapter_path: Path | None = None) -> None:
                     prompt_len=prompt_len,
                 )
                 with torch.no_grad():
+                    sum_logp_ref: torch.Tensor
                     sum_logp_ref, _ = _gather_generated_logp_stats(
                         model=ref_model,
                         input_ids=group_input_ids,
