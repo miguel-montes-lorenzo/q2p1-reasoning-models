@@ -1,12 +1,22 @@
 import os
+import re
 import sys
+from pathlib import Path
 from typing import Any
 
+import torch
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from rlm.config import INFERENCE_CONFIG as NORMAL_INFERENCE_CONFIG
 from tool_use.config import INFERENCE_CONFIG as TOOL_INFERENCE_CONFIG
+from tool_use.tool_handler import (
+    ensure_response_contains_answer,
+    insert_tool_desciptions_in_system_propt,
+)
+from tool_use.tools import TOOL_DICT
 
 # Añadir el directorio raíz al path para poder importar los módulos de las fases
 sys.path.append(os.path.dirname(os.path.dirname(p=os.path.abspath(path=__file__))))
@@ -106,15 +116,6 @@ async def phase2_endpoint(request: QueryRequest) -> dict[str, Any]:
             "response": "ERROR: Modelo de Fase 2 no cargado.",
             "details": {"status": "todo"},
         }
-
-    import re
-
-    import torch
-    from tool_use.tool_handler import (
-        ensure_response_contains_answer,
-        insert_tool_desciptions_in_system_propt,
-    )
-    from tool_use.tools import TOOL_DICT
 
     cfg: Any = TOOL_INFERENCE_CONFIG()
 
@@ -273,6 +274,50 @@ async def phase4_endpoint(request: QueryRequest) -> dict[str, Any]:
     }  # TODO remove
 
     return result
+
+
+# --- Web UI served by FastAPI ---
+
+# WEB_PUBLIC_DIR = Path(os.environ.get("WEB_PUBLIC_DIR", default="/home/root/web/public"))
+# INDEX_HTML: Path = WEB_PUBLIC_DIR / "index.html"
+
+
+# # Sirve estáticos en /static (NO en /)
+# app.mount(
+#     path="/static",
+#     app=StaticFiles(directory=str(WEB_PUBLIC_DIR), html=False),
+#     name="static",
+# )
+
+
+# @app.get("/")
+# async def web_index() -> FileResponse:
+#     return FileResponse(path=str(INDEX_HTML))
+
+
+# # IMPORTANTE: montar estáticos al final para no “pisar” /phase* ni /api/*
+# app.mount(
+#     path="/",
+#     app=StaticFiles(directory=str(WEB_PUBLIC_DIR), html=True),
+#     name="web",
+# )
+
+
+# --- Web UI served by FastAPI ---
+
+WEB_PUBLIC_DIR: Path = Path(os.environ.get("WEB_PUBLIC_DIR", default="/home/root/web"))
+INDEX_HTML: Path = WEB_PUBLIC_DIR / "index.html"
+
+app.mount(
+    path="/static",
+    app=StaticFiles(directory=str(WEB_PUBLIC_DIR), html=False),
+    name="static",
+)
+
+
+@app.get("/")
+async def web_index() -> FileResponse:
+    return FileResponse(path=str(INDEX_HTML))
 
 
 if __name__ == "__main__":

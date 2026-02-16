@@ -54,6 +54,9 @@ services:
 
       - ${REAL_HF_CACHE}:/home/root/.cache/huggingface
 
+      # - ${REPO_PATH}/web/public:/home/root/web/public
+      - ${REPO_PATH}/web:/home/root/web
+
       # - /:/home/root/admin
 
 
