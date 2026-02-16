@@ -1,129 +1,47 @@
-from collections.abc import Callable
+# --- Implementación de las herramientas ---
 
-import requests
+from typing import Any
+
 from dotenv import load_dotenv
-from langchain.tools import tool
 
-load_dotenv()
-
-"""
-otras opciones para agentes:
-- from llama_index
-    from llama_index.llms import Ollama
-    from llama_index.agent import ReActAgent
-    from llama_index.tools import FunctionTool
-- https://www.tavily.com/
-- https://www.langchain.com/langgraph
-
-"""
+load_dotenv()  # Intenta cargar desde el directorio de trabajo actual
 
 
-@tool
 def calculator(expression: str) -> str:
-    """Evalúa una expresión matemática simple."""
+    """Evaluate a simple mathematical expression.
+
+    Args:
+        expression: Arithmetic expression containing digits and basic operators.
+
+    Returns:
+        Result of the evaluated expression as a string, or an error message.
+    """
     try:
-        # Por seguridad, limitamos caracteres
+        # Restrict allowed characters for safety
         allowed: set[str] = set("0123456789+-*/(). ")
-        if not set(expression).issubset(allowed):
-            return "Error: Caracteres no permitidos."
+        disallowed: set[str] = set(expression) - allowed
+        if disallowed:
+            invalid_char: str = sorted(disallowed)[0]
+            return f"Error: Disallowed character '{invalid_char}'."
+
         return str(eval(expression))
     except Exception as e:
-        return f"Error calculando: {e}"
+        return f"Error calculating: {e}"
 
 
-@tool
-def simulated_search(query: str) -> str:
-    """
-    Busca información en una base de datos.
-    SIEMPRE usa esta herramienta para buscar información sobre personas, lugares,
-    tecnología o cualquier dato factual. Input: la consulta de búsqueda.
-    """
-    query_lower: str = query.lower()
-    if "hermano" in query_lower and "miguel" in query_lower:
-        return "Miguel tiene un hermano llamado Juan."
-    elif "capital" in query_lower and "francia" in query_lower:
-        return "La capital de Francia es París."
-    elif "python" in query_lower:
-        return "Python es un lenguaje de programación de alto nivel."
-    else:
-        return "No se encontraron resultados relevantes en el buscador simulado."
+CALCULATOR_DESCRIPTION: str = (
+    "The calculator tool deterministically evaluates simple arithmetic expressions and "
+    "returns the numeric result as a string. It accepts a single argument, `expression`, "
+    "containing digits, whitespace, parentheses, and operators `+`, `-`, `*`, `/`, and "
+    "exponentiation using Python syntax (e.g., `x**(1/2)`). Invalid characters are "
+    "rejected to prevent unsafe execution. If valid, the expression is evaluated and the "
+    "result returned as a string; otherwise, a clear error message is produced. This tool "
+    "must be used whenever an exact numerical computation is required, especially for "
+    "non-trivial arithmetic, chained operations, or intermediate results referenced "
+    "during reasoning.\n"
+)
 
 
-@tool
-def get_book_info(title: str) -> str:
-    """
-    API PÚBLICA (Temática Equipo: Libros).
-    Usa Open Library para buscar información.
-    """
-    try:
-        url: str = f"https://openlibrary.org/search.json?q={title.replace(' ', '+')}"
-        resp: requests.Response = requests.get(url=url)
-        data = resp.json()
-        if data.get("numFound", 0) > 0:
-            book = data["docs"][0]
-            return (
-                f"Título: {book.get('title')}, "
-                f"Autor: {book.get('author_name', ['?'])[0]}, "
-                f"Año: {book.get('first_publish_year')}"
-            )
-        return "Libro no encontrado."
-    except Exception as e:
-        return f"Error API: {e}"
-
-
-tools_map: dict[str, Callable[..., str]] = {
-    "calculator": calculator,
-    "simulated_search": simulated_search,
-    "get_book_info": get_book_info,
+TOOL_DICT: dict[str, Any] = {
+    "calculator": {"function": calculator, "description": CALCULATOR_DESCRIPTION}
 }
-
-# 2. JSON Schema definition to instruct the LLM on available tools
-AVAILABLE_TOOLS_SCHEMA: list[
-    dict[str, str | dict[str, str | dict[str, dict[str, str]] | list[str]]]
-] = [
-    {
-        "name": "calculator",
-        "description": (
-            "Performs mathematical calculations."
-            "Use this for expressions like '2 + 2' or '25 * 4'."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "expression": {
-                    "type": "string",
-                    "description": "The mathematical expression to evaluate.",
-                }
-            },
-            "required": ["expression"],
-        },
-    },
-    {
-        "name": "simulated_search",
-        "description": (
-            "Searches for factual information about "
-            "people, places, or tech in a local database."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The search query."}
-            },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "get_book_info",
-        "description": (
-            "Searches for real book information (author, year) "
-            "using the Open Library API."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "The title of the book."}
-            },
-            "required": ["title"],
-        },
-    },
-]

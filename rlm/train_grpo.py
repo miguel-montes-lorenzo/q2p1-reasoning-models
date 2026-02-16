@@ -19,10 +19,9 @@ from peft import (
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-from rlm.config import GRPO_CONFIG
-from rlm.config import REPO_DIR
 from utils import check_cwd
+
+from rlm.config import GRPO_CONFIG, REPO_DIR
 
 
 def _parse_gsm8k_answer(*, answer_field: str) -> tuple[str, str]:
@@ -329,9 +328,10 @@ def _build_prompt_text(*, tokenizer: Any, cfg: GRPO_CONFIG, question: str) -> st
     Returns:
         Rendered prompt string.
     """
+    wrapped_question: str = f"<question>{question}</question>"
     messages: list[dict[str, str]] = [
         {"role": "system", "content": cfg.system_prompt},
-        {"role": "user", "content": question},
+        {"role": "user", "content": wrapped_question},
     ]
     prompt: str = tokenizer.apply_chat_template(
         messages,
@@ -936,7 +936,7 @@ if __name__ == "__main__":
     check_cwd(expected_dir=REPO_DIR)
     path: Path | None = _parse_optional_checkpoint_arg(argv=sys.argv)
 
-    default_best: Path = Path("weights/sft_lora/best-checkpoint")
+    default_best: Path = Path("weights/rlm/sft_lora/best-checkpoint")
     if path is None and default_best.exists():
         path = default_best
 

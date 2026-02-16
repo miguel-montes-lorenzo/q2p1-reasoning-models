@@ -1,4 +1,4 @@
-# train_sft.py (your training script)
+# train_sft.py
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from datasets import Dataset, load_dataset
 from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import SFTConfig, SFTTrainer
-
-from rlm.config import SFT_CONFIG as CONFIG
-from rlm.config import REPO_DIR
 from utils import check_cwd
+
+from rlm.config import REPO_DIR
+from rlm.config import SFT_CONFIG as CONFIG
 
 
 def _parse_gsm8k_answer(*, answer_field: str) -> tuple[str, str]:
@@ -71,9 +71,11 @@ def formatting_prompts_func(
         f"<think>{reasoning}</think>\n<answer>{final_answer}</answer>"
     ).strip()
 
+    wrapped_question: str = f"<question>{question}</question>"
+
     messages: list[dict[str, str]] = [
         {"role": "system", "content": cfg.system_prompt},
-        {"role": "user", "content": question},
+        {"role": "user", "content": wrapped_question},
         {"role": "assistant", "content": assistant_text},
     ]
 

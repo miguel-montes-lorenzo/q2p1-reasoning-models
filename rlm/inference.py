@@ -12,10 +12,10 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizerBase,
 )
+from utils import check_cwd
 
 from rlm.config import INFERENCE_CONFIG as CONFIG
 from rlm.config import REPO_DIR
-from utils import check_cwd
 
 
 def _build_bnb_config(*, use_4bit: bool) -> BitsAndBytesConfig | None:
@@ -48,9 +48,10 @@ def _build_messages(*, question: str, system_prompt: str) -> list[dict[str, str]
     Returns:
         A list of chat messages for apply_chat_template().
     """
+    wrapped_question: str = f"<question>{question}</question>"
     return [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": question},
+        {"role": "user", "content": wrapped_question},
     ]
 
 

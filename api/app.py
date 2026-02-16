@@ -1,12 +1,15 @@
 import os
 import sys
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel
+from rlm.config import INFERENCE_CONFIG as NORMAL_INFERENCE_CONFIG
+from tool_use.config import INFERENCE_CONFIG as TOOL_INFERENCE_CONFIG
 
 # Añadir el directorio raíz al path para poder importar los módulos de las fases
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(p=os.path.abspath(path=__file__))))
 
 PORT = 8182
 
@@ -31,7 +34,7 @@ AGENT = None
 
 
 @app.on_event("startup")
-async def startup_event():
+async def startup_event() -> None:
     global MODEL, TOKENIZER, AGENT
     print("Inicializando API...")
     # Cargar el modelo de la Fase 1
@@ -57,7 +60,7 @@ class GenericResponse(BaseModel):
 
 # --- FASE 1: Razonamiento (RLM) ---
 @app.post(path="/phase1/reasoning", response_model=GenericResponse, tags=["Fase 1"])
-async def phase1_endpoint(request: QueryRequest):
+async def phase1_endpoint(request: QueryRequest) -> dict[str, Any]:
     """
     Evalúa el modelo RLM. Debe devolver la respuesta con el razonamiento (CoT) visible.
     """
@@ -69,7 +72,10 @@ async def phase1_endpoint(request: QueryRequest):
 
     # Usar la función de inferencia de Fase 1
     response_text: str = generate_reasoning(
-        prompt=request.prompt, model=MODEL, tokenizer=TOKENIZER
+        prompt=request.prompt,
+        model=MODEL,
+        tokenizer=TOKENIZER,
+        cfg=NORMAL_INFERENCE_CONFIG,
     )
     return {
         "response": response_text,
@@ -80,89 +86,160 @@ async def phase1_endpoint(request: QueryRequest):
 
 # --- FASE 2: Tool Use ---
 @app.post(path="/phase2/tools", response_model=GenericResponse, tags=["Fase 2"])
-async def phase2_endpoint(request: QueryRequest):
+async def phase2_endpoint(request: QueryRequest) -> dict[str, Any]:
+    """Evaluate tool-use ability with an iterative tool loop.
+
+    This endpoint:
+      1) Builds a tool-augmented system prompt (calculator description injected).
+      2) Generates an assistant response.
+      3) If the assistant emits <tool ...> tags (and no <answer> yet), executes tools
+         and appends the required "<think>...</think>\n<tools>...</tools>" block as
+         a new user message, then generates again.
+      4) Stops when an <answer> is produced or when max_calls is reached.
+      5) Ensures the final assistant message contains <answer>...</answer>.
+
+    Returns:
+        GenericResponse-compatible dict with response, trace, and details.
     """
-    Evalúa la capacidad de llamar herramientas.
-    Si el prompt requiere una herramienta, debe devolver la ejecución simulada.
-    """
-    # 1. Simular generación del modelo (o usar el real si ya sabe usar tools)
-    # model_output_simulated = '''... Thought: Necesito la calculadora. Action: '''
-
-    # 2. Usar el handler de Fase 2
-    # TODO: Descomentar
-    # tool_result = parse_and_execute_tool_call(model_output_simulated)
-
-    # tool_result = "Placeholder: Resultado de herramienta (Fase 2) no implementado."
-
-    # if tool_result:
-    #     return {"response": f"Tool execution result: {tool_result}", "details": {"tool_called": True}}
-    # else:
-    #     return {"response": "No tool call detected or needed.", "details": {"tool_called": False}}
-
-    # 1. Verificar que tu modelo local está cargado (reusamos el de la Fase 1)
     if not MODEL or not TOKENIZER:
         return {
-            "response": "ERROR: El modelo propio (MODEL/TOKENIZER) no está cargado.",
-            "details": {"status": "error_model_not_loaded"},
+            "response": "ERROR: Modelo de Fase 2 no cargado.",
+            "details": {"status": "todo"},
         }
 
-    try:
-        # 2. Construir el Prompt Final
-        # Concatenamos las instrucciones de herramientas con la pregunta del usuario.
-        # ADAPTALO: Si tu modelo usa un formato especial (ej: <|system|>, [INST], etc.), añádelo aquí.
+    import re
 
-        final_prompt = None  # Poner el promt de Miguel
+    import torch
+    from tool_use.tool_handler import (
+        ensure_response_contains_answer,
+        insert_tool_desciptions_in_system_propt,
+    )
+    from tool_use.tools import TOOL_DICT
 
-        # 3. Generar respuesta con tu modelo local
-        # Usamos la misma función de inferencia que en la Fase 1
-        # Asegúrate de que generate_reasoning acepte el string completo
-        raw_content = generate_reasoning(
-            prompt=final_prompt, model=MODEL, tokenizer=TOKENIZER
+    cfg: Any = TOOL_INFERENCE_CONFIG()
+
+    descriptions: dict[str, str] = {
+        tool_name: str(tool_meta["description"])
+        for tool_name, tool_meta in TOOL_DICT.items()
+    }
+    system_prompt_with_tools: str = insert_tool_desciptions_in_system_propt(
+        descriptions=descriptions
+    )
+
+    prompt: str = str(request.prompt)
+    has_question_tags: bool = (
+        re.search(pattern=r"<question>.*?</question>", string=prompt, flags=re.DOTALL)
+        is not None
+    )
+    wrapped_question: str = (
+        prompt if has_question_tags else f"<question>{prompt}</question>"
+    )
+
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": system_prompt_with_tools},
+        {"role": "user", "content": wrapped_question},
+    ]
+
+    trace: list[dict[str, Any]] = []
+    tool_calls_used: int = 0
+
+    def generate_from_messages(*, msgs: list[dict[str, str]]) -> str:
+        """Generate a single assistant completion from the current chat state."""
+        text: str = TOKENIZER.apply_chat_template(
+            conversation=msgs,
+            tokenize=False,
+            add_generation_prompt=True,
         )
 
-        # 4. Lógica de Herramientas (Parsing y Ejecución)
-        # Tu handler busca el bloque JSON en 'raw_content'
-        execution_data = parse_and_execute_tool_call(raw_content)
+        inputs: Any = TOKENIZER(text, return_tensors="pt")
+        device: torch.device = next(MODEL.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
 
-        # 5. Construir respuesta (Trace y Details)
-        trace_data = [
-            {
-                "step": 0,
-                "content": raw_content,
-            }  # Lo que generó tu modelo (debería ser el JSON)
-        ]
-
-        final_response = execution_data["result"]
-        was_tool_used = execution_data["executed"]
-
-        if was_tool_used:
-            trace_data.append({
-                "step": 1,
-                "content": f"Resultado Herramienta: {final_response}",
-            })
-            # Opcional: Podrías volver a invocar al modelo aquí pasándole el resultado para que redacte una frase final.
-
-        return {
-            "response": final_response,  # Devuelve el resultado de la herramienta o el texto generado
-            "trace": trace_data,
-            "details": {
-                "tool_called": was_tool_used,
-                "stage": "tool_use_local_model",
-                "model_used": "Custom Local Model",
-            },
+        gen_kwargs: dict[str, Any] = {
+            "max_new_tokens": int(cfg.max_new_tokens),
+            "do_sample": bool(cfg.do_sample),
+            "eos_token_id": TOKENIZER.eos_token_id,
+            "pad_token_id": TOKENIZER.pad_token_id,
         }
+        if cfg.temperature is not None:
+            gen_kwargs["temperature"] = float(cfg.temperature)
+        if cfg.top_p is not None:
+            gen_kwargs["top_p"] = float(cfg.top_p)
 
-    except Exception as e:
-        return {
-            "response": f"Error en Fase 2 (Modelo Propio): {e!s}",
-            "trace": [],
-            "details": {"error": str(e)},
-        }
+        with torch.no_grad():
+            out: Any = MODEL.generate(**inputs, **gen_kwargs)
+
+        prompt_len: int = int(inputs["input_ids"].shape[-1])
+        generated_ids: Any = out[0][prompt_len:]
+        return TOKENIZER.decode(generated_ids, skip_special_tokens=True).strip()
+
+    while True:
+        assistant_text: str = generate_from_messages(msgs=messages)
+        trace.append({
+            "step": len(trace),
+            "role": "assistant",
+            "content": assistant_text,
+        })
+        messages.append({"role": "assistant", "content": assistant_text})
+
+        has_answer: bool = (
+            re.search(
+                pattern=r"<answer>.*?</answer>",
+                string=assistant_text,
+                flags=re.DOTALL,
+            )
+            is not None
+        )
+        if has_answer:
+            break
+
+        if tool_calls_used >= int(cfg.max_calls):
+            break
+
+        should_continue: bool
+        prompt_appendix: str
+        should_continue, prompt_appendix = parse_and_execute_tool_call(
+            model_output=assistant_text,
+            tool_dict=TOOL_DICT,
+            max_calls=int(cfg.max_calls),
+        )
+
+        if not should_continue:
+            break
+
+        tool_calls_used += 1
+        trace.append({
+            "step": len(trace),
+            "role": "user",
+            "content": prompt_appendix,
+            "type": "tools_evaluation",
+        })
+        messages.append({"role": "user", "content": prompt_appendix})
+
+    # Enforce <answer> presence in the final assistant message.
+    last_assistant: str = str(messages[-1]["content"])
+    fixed_last_assistant: str = ensure_response_contains_answer(
+        full_prompt=last_assistant
+    )
+    if fixed_last_assistant != last_assistant:
+        messages[-1]["content"] = fixed_last_assistant
+        trace.append({
+            "step": len(trace),
+            "role": "assistant",
+            "content": fixed_last_assistant,
+            "type": "answer_enforced",
+        })
+
+    return {
+        "response": str(messages[-1]["content"]),
+        "trace": trace,
+        "details": {"stage": "tool_use", "tool_calls_used": tool_calls_used},
+    }
 
 
 # --- FASE 3: RAG ---
 @app.post(path="/phase3/rag", response_model=GenericResponse, tags=["Fase 3"])
-async def phase3_endpoint(request: QueryRequest):
+async def phase3_endpoint(request: QueryRequest) -> dict[str, Any]:
     """
     Evalúa el RAG. Debe recuperar contexto de los documentos y responder.
     """
@@ -181,7 +258,7 @@ async def phase3_endpoint(request: QueryRequest):
 
 # --- FASE 4: Agente ReAct ---
 @app.post("/phase4/agent", tags=["Fase 4"])
-async def phase4_endpoint(request: QueryRequest):
+async def phase4_endpoint(request: QueryRequest) -> dict[str, Any]:
     """
     Evalúa el agente completo. Devuelve la respuesta final y la traza de ejecución.
     """

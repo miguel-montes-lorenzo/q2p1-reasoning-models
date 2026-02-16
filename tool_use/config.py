@@ -1,10 +1,9 @@
-# config.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
+from rlm.config import SYSTEM_PROMPT, SYSTEM_PROMPT_END
 from utils import find_parent_with_markers
 
 MODEL_NAME: str = "Qwen/Qwen2.5-7B-Instruct"
@@ -14,38 +13,97 @@ DATASET_CONFIG: str = "main"
 REPO_DIR: Path = find_parent_with_markers(start=Path.cwd())
 
 
-SYSTEM_PROMPT: str = (
-    "ROL:\n"
-    "- You are a helpful math tutor. Solve the problem step by step.\n"
+TOOL_SYSTEM_PROMPT: str = (
+    "TOOLS:\n"
+    "The <tool ...> tag is a special tag that can be used only inside the <think> tag "
+    "(this is an exception to the non-nesting tag rule, but the nesting depth is "
+    "restricted to 1 inside the think tag). All calls to tools will have 3 arguments:\n"
+    "   - id: identifier used to identify the tool (must be an integer) (cannot be "
+    "repeated across tools inside the same <think> tag token)\n"
+    "   - name: name of the tool to use\n"
+    "   - args: dictionary with the argument values for the tool\n"
     "\n"
-    "USER INPUT FORMAT:\n"
-    "- The user question will always be provided between the tags "
-    "`<question>...</question>`.\n"
-    "- You must read and solve only the content contained inside these tags.\n"
-    "- Any text outside `<question>...</question>` must be ignored.\n"
+    "The <id=...> tag is a special tag that can be used inside the <tool ...> tag "
+    "argument values, or inside the <answer> tag. Appearances of the <id=...> tag "
+    "inside <tool ...> arguments will be formatted with the output value of the "
+    "identified tool before this tool evaluation (make sure to avoid cross-references). "
+    "Appearances of the <id=...> tag inside <answer> will be formatted for the answer "
+    "evaluation.\n"
     "\n"
-    "RESPONSE FORMAT:\n"
-    "- The response will be structured in tag sections.\n"
-    "- Each tag section will begin with an opening tag `<section_name>`.\n"
-    "- Each tag section will conclude with a closing tag `</section_name>`.\n"
-    "- All content will be written between the opening and closing tags of a section.\n"
-    "- No content will be written outside these section tags.\n"
-    "- No nested tag sections will be created: <tag1>...</tag1><tag2>...</tagN>.\n"
+    "The model will have up to 3 iterations of responses to use tools. The tool loop "
+    "will end either after the 3rd iteration or when an iteration contains the "
+    "<answer> tag. If the model reaches the 3rd iteration without an answer, a blank "
+    "answer <answer></answer> will be validated. If an iteration does not contain "
+    "either <tool ...> tags or an <answer> tag, a blank answer <answer></answer> will "
+    "be validated.\n"
     "\n"
-    "TAG SECTIONS:\n"
-    "- The response must contain exactly once each of the following clearly "
-    "differentiated tag sections (in this order):\n"
-    "    - think: <think>...</think>\n"
-    "    - answer: <answer>...</answer>\n"
-    "- The response must begin with the opening tag of the think section: `<think>`.\n"
-    "- The response must end with the closing tag of the answer section: `</answer>`.\n"
-    "- The think section will contain the reasoning required to arrive at the solution "
-    "to the posed question.\n"
-    "- The answer section will contain a single minimal value that will be validated "
-    "as a possible response to the question (a number, a letter, a fraction, ...).\n"
+    "---\n"
+    "First Example:\n"
+    "\n"
+    "- First input:\n"
+    "<question>what is the result of sqrt(45234)?</question>\n"
+    "\n"
+    "- First response:\n"
+    "<think>sqrt means square root. The calculator tool does not have a square root "
+    "operator, but I can use a fractional exponent. The result of sqrt(45234) is "
+    "<tool id=1 name=calculator args={expression='45234**(1/2)'}></think>\n"
+    "<answer><id=1></answer>\n"
+    "\n"
+    "\n"
+    "---\n"
+    "Second Example:\n"
+    "\n"
+    "- First input:\n"
+    "<question>what is the result of sqrt(45234) + (5.23 * 4.83)?</question>\n"
+    "\n"
+    "- First response:\n"
+    "<think>sqrt means square root. The calculator tool does not have a square root "
+    "operator, but I can use a fractional exponent. The result of sqrt(45234) is "
+    "<tool id=1 name=calculator args={expression='45234**(1/2)'}>. (5.23 * 4.83) is "
+    "not a trivial multiplication, so it would be safer to use the calculator tool. "
+    "The result of (5.23 * 4.83) is <tool id=2 name=calculator args={expression='5.23 "
+    "* 4.83'}>. In order to get the result of sqrt(45234) + (5.23 * 4.83), I need to "
+    "sum the results of both terms of the expression. As the results are being "
+    "computed in this same think block with the calculator tool, I can reference them "
+    "using their corresponding id tags. The result of sqrt(45234) + (5.23 * 4.83) is "
+    "<tool id=3 name=calculator args={expression='<id=1> + <id=2>'}></think>\n"
+    "<answer><id=3></answer>\n"
+    "\n"
+    "\n"
+    "---\n"
+    "Third Example (if the tools functionality does not allow answering in one step, "
+    "do it in more steps, up to 3):\n"
+    "\n"
+    "- First input:\n"
+    "<question>what is the result of sqrt(45234) truncated to 2 decimals?</question>\n"
+    "\n"
+    "- First response:\n"
+    "<think>sqrt means square root. The calculator tool does not have a square root "
+    "operator, but I can use a fractional exponent. The result of sqrt(45234) is "
+    "<tool id=1 name=calculator args={expression='45234**(1/2)'}></think>\n"
+    "\n"
+    "- Second input:\n"
+    "<question>what is the result of sqrt(45234) truncated to 2 decimals</question>\n"
+    "<think>sqrt means square root. The calculator tool does not have a square root "
+    "operator, but I can use a fractional exponent. The result is <tool id=1 "
+    "name=calculator args={expression='45234**(1/2)'}></think>\n"
+    "<tools>\n"
+    "{\n"
+    "    1: {\n"
+    "        tool: 'calculator',\n"
+    "        args: {\n"
+    "            'expression': '45234**(1/2)'\n"
+    "        }\n"
+    "        output: '212.6828624971932'\n"
+    "    }\n"
+    "}\n"
+    "</tools>\n"
+    "\n"
+    "- Second response:\n"
+    "<think>The result of sqrt(45234) is 212.6828624971932. Truncating "
+    "212.6828624971932 to 0 decimals results in 212.</think>\n"
+    "<answer>212</answer>\n"
 )
-
-SYSTEM_PROMPT_END: str = "\n\n-----------\n"
 
 
 USE_4_BIT: bool = True
@@ -103,7 +161,7 @@ class SFT_CONFIG:
     use_4bit: bool = USE_4_BIT
     max_seq_len: int = MAX_SEQ_LEN
 
-    system_prompt: str = f"{SYSTEM_PROMPT}{SYSTEM_PROMPT_END}"
+    system_prompt: str = f"{SYSTEM_PROMPT}{TOOL_SYSTEM_PROMPT}{SYSTEM_PROMPT_END}"
 
     # Generation hyperparameters (check script)
     do_sample: bool = False
@@ -116,89 +174,12 @@ class SFT_CONFIG:
     lr: float = 2e-4
     batch_size_questions: int = 4
 
+    # tool use
+    max_calls: int = 3
+
     # Training Management
     loogging_interval: int = 10
-    checkpoint_directory: Path = REPO_DIR / "weights/rlm/sft_lora"
-    checkpoint_interval: int = 200
-    keep_last_checkpoints: int = 2
-
-
-class GRPO_CONFIG:
-    """Configuration container for GRPO-based policy optimization.
-
-    This class groups all hyperparameters and runtime settings required
-    for Group Relative Policy Optimization (GRPO) training on GSM8K-style
-    tasks. It mirrors `SFT_CONFIG` where applicable, but includes
-    additional parameters specific to group-based policy-gradient
-    training.
-
-    Attributes:
-        model_name: Hugging Face model identifier of the base causal LM.
-        dataset_name: Hugging Face dataset name used for GRPO training.
-        dataset_config: Dataset configuration or subset name passed to
-            `load_dataset(..., name=dataset_config)`.
-
-        use_4bit: Whether to load the base model using 4-bit NF4 quantization.
-        max_seq_len: Maximum total sequence length (prompt + generation).
-
-        system_prompt: System prompt prepended when formatting inputs using
-            a chat template.
-
-        max_new_tokens: Maximum number of tokens generated per sampled
-            completion during training.
-        temperature: Sampling temperature used during stochastic generation.
-            Must be greater than zero for GRPO to be effective.
-        top_p: Nucleus sampling probability mass used during generation.
-
-        epochs: Number of training epochs for GRPO.
-        lr: Learning rate used for policy updates.
-        batch_size_questions: Number of questions processed per optimization
-            step.
-        group_size: Number of sampled completions per question used to
-            compute group-relative advantages.
-        max_train_examples: Optional cap on the number of training examples
-            for faster or debug runs.
-        grad_accum_steps: Number of gradient accumulation steps.
-        clip_grad_norm: Maximum gradient norm used for clipping.
-
-        loogging_interval: Number of steps between metric logging.
-        checkpoint_directory: Directory where LoRA adapter checkpoints are
-            saved.
-        checkpoint_interval: Number of steps between checkpoint saves.
-        keep_last_checkpoints: Maximum number of recent checkpoints to retain.
-    """
-
-    model_name: str = MODEL_NAME
-    dataset_name: str = DATASET_NAME
-    dataset_config: str = DATASET_CONFIG
-
-    use_4bit: bool = USE_4_BIT
-    max_seq_len: int = MAX_SEQ_LEN
-
-    system_prompt: str = f"{SYSTEM_PROMPT}{SYSTEM_PROMPT_END}"
-
-    do_sample: bool = True
-    max_new_tokens: int = MAX_NEW_TOKENS
-    temperature: float = TEMPERATURE
-    top_p: float | None = TOP_P
-
-    # GRPO / RL hyperparameters
-    epochs: int = 1
-    lr: float = 1e-5
-    batch_size_questions: int = 1
-    group_size: int = 8
-    max_train_examples: int | None = 2_000
-    grad_accum_steps: int = 1
-    clip_grad_norm: float = 1.0
-    beta_kl: float = 0.02
-
-    # LoRA hyperparameters (optional override from training script)
-    lora_r: int = 16
-    lora_alpha: int = 32
-    lora_dropout: float = 0.05
-
-    logging_interval: int = 25
-    checkpoint_directory: Path = REPO_DIR / "weights/rlm/final_rlm_lora"
+    checkpoint_directory: Path = REPO_DIR / "weights/tool_use/sft_lora"
     checkpoint_interval: int = 200
     keep_last_checkpoints: int = 2
 
@@ -250,7 +231,7 @@ class INFERENCE_CONFIG:
     use_4bit: bool = USE_4_BIT
     max_seq_len: int = MAX_SEQ_LEN
 
-    system_prompt: str = f"{SYSTEM_PROMPT}{SYSTEM_PROMPT_END}"
+    system_prompt: str = f"{SYSTEM_PROMPT}{TOOL_SYSTEM_PROMPT}{SYSTEM_PROMPT_END}"
 
     # Generation hyperparameters (check script)
     do_sample: bool = True
@@ -258,4 +239,7 @@ class INFERENCE_CONFIG:
     temperature: float | None = TEMPERATURE if do_sample else None
     top_p: float | None = TOP_P if do_sample else None
 
-    checkpoint_directory: Path = REPO_DIR / "weights/rlm/sft_lora/best_checkpoint"
+    # tool use
+    max_calls: int = 3
+
+    checkpoint_directory: Path = REPO_DIR / "weights/tool_use/sft_lora/best_checkpoint"
