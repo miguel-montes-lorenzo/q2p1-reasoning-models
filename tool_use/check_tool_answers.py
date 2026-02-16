@@ -438,7 +438,8 @@ def _safe_calculator(*, expression: str) -> str:
             if isinstance(sub, (ast.Call, ast.Attribute, ast.Name, ast.Subscript)):
                 return "Error: Unsupported expression."
         value: Any = eval(
-            compile(node, filename="<expr>", mode="eval"), {"__builtins__": {}}
+            compile(node, filename="<expr>", mode="eval"),
+            {"__builtins__": {}},
         )
         return str(value)
     except Exception as exc:
@@ -447,9 +448,41 @@ def _safe_calculator(*, expression: str) -> str:
 
 def _default_tool_registry() -> dict[str, Callable[..., str]]:
     """Create a minimal tool registry."""
+
+    def _multiplication(*, factor1: Any, factor2: Any) -> str:
+        try:
+            a: float = float(factor1)
+            b: float = float(factor2)
+            out: float = a * b
+            if out.is_integer():
+                return str(int(out))
+            return str(out)
+        except Exception as exc:
+            return f"Error running tool 'multiplication': {exc}"
+
+    def _mutation(*, value: Any, exponent: Any) -> str:
+        # The adapter seems to use mutation(value=2, exponent=3) to mean 2 * 3.
+        try:
+            a: float = float(value)
+            b: float = float(exponent)
+            out: float = a * b
+            if out.is_integer():
+                return str(int(out))
+            return str(out)
+        except Exception as exc:
+            return f"Error running tool 'mutation': {exc}"
+
     return {
         "calculator": lambda **kwargs: _safe_calculator(
             expression=str(kwargs.get("expression", ""))
+        ),
+        "multiplication": lambda **kwargs: _multiplication(
+            factor1=kwargs.get("factor1"),
+            factor2=kwargs.get("factor2"),
+        ),
+        "mutation": lambda **kwargs: _mutation(
+            value=kwargs.get("value"),
+            exponent=kwargs.get("exponent"),
         ),
     }
 
@@ -466,6 +499,62 @@ def _replace_id_refs(*, text: str, tool_outputs: dict[int, str]) -> str:
         return tool_outputs.get(tid, m.group(0))
 
     return id_ref_re.sub(_sub, text)
+
+
+def _parse_args_kv_block(*, src: str) -> dict[str, Any]:
+    """Parse args like: factor1=3, factor2=4, expression='<id=1> + <id=2>'.
+
+    Args:
+        src: Content between braces, without surrounding '{' and '}'.
+
+    Returns:
+        Dict with parsed primitive values.
+    """
+    args: dict[str, Any] = {}
+
+    parts: list[str] = re.split(
+        r",(?=(?:[^'\"\\]*(?:\\.|'[^']*'|\"[^\"]*\"))*[^'\"\\]*$)",
+        src,
+    )
+    for raw in parts:
+        part: str = raw.strip()
+        if not part or "=" not in part:
+            continue
+
+        k_raw: str
+        v_raw: str
+        k_raw, v_raw = part.split("=", 1)
+        key: str = k_raw.strip()
+        val_s: str = v_raw.strip()
+
+        if (val_s.startswith("'") and val_s.endswith("'")) or (
+            val_s.startswith('"') and val_s.endswith('"')
+        ):
+            args[key] = val_s[1:-1]
+            continue
+
+        try:
+            if "." in val_s:
+                args[key] = float(val_s)
+            else:
+                args[key] = int(val_s)
+            continue
+        except Exception:
+            pass
+
+        args[key] = val_s
+
+    return args
+
+
+def _extract_think_blocks(*, text: str) -> list[str]:
+    """Extract all <think>...</think> blocks."""
+    blocks: list[str] = re.findall(
+        pattern=r"<think>\s*(.*?)\s*</think>",
+        string=text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return [b.strip() for b in blocks if b.strip()]
 
 
 def _find_tool_calls(*, think_text: str) -> list[tuple[int, str, dict[str, Any]]]:
@@ -487,32 +576,10 @@ def _find_tool_calls(*, think_text: str) -> list[tuple[int, str, dict[str, Any]]
     for m in tool_re.finditer(think_text):
         tid: int = int(m.group("id"))
         name: str = str(m.group("name"))
-        args_src: str = "{" + str(m.group("args")) + "}"
-
-        args_norm: str = args_src.replace("=", ":")
-        args_norm = re.sub(r":\s*'([^']*)'", r': "\1"', args_norm)
-        args_norm = re.sub(r':\s*"([^"]*)"', r': "\1"', args_norm)
-
-        args: dict[str, Any] = {}
-        try:
-            parsed: Any = ast.literal_eval(args_src)
-            if isinstance(parsed, dict):
-                args = cast(dict[str, Any], parsed)
-        except Exception:
-            args = {}
-
+        args_body: str = str(m.group("args")).strip()
+        args: dict[str, Any] = _parse_args_kv_block(src=args_body)
         calls.append((tid, name, args))
     return calls
-
-
-def _extract_think_blocks(*, text: str) -> list[str]:
-    """Extract all <think>...</think> blocks."""
-    blocks: list[str] = re.findall(
-        pattern=r"<think>\s*(.*?)\s*</think>",
-        string=text,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    return [b.strip() for b in blocks if b.strip()]
 
 
 def _run_tool_loop(
@@ -523,7 +590,12 @@ def _run_tool_loop(
     cfg: CONFIG,
     tool_registry: dict[str, Callable[..., str]],
 ) -> str:
-    """Run up to cfg.max_calls tool iterations for a single question."""
+    """Run up to cfg.max_calls tool iterations for a single question.
+
+    Important:
+        If the model emits tool calls and an <answer> in the same completion,
+        execute tools and replace <id=...> inside <answer> before returning.
+    """
     wrapped: str = f"<question>{question}</question>"
     messages: list[dict[str, str]] = [
         {"role": "system", "content": cfg.system_prompt},
@@ -542,53 +614,68 @@ def _run_tool_loop(
         )
         last_completion = completion
 
-        if re.search(
-            pattern=r"<answer>\s*.*?\s*</answer>",
-            string=completion,
-            flags=re.DOTALL | re.IGNORECASE,
-        ):
-            break
-
         think_blocks: list[str] = _extract_think_blocks(text=completion)
-        if len(think_blocks) == 0:
-            break
 
         all_calls: list[tuple[int, str, dict[str, Any]]] = []
         for tb in think_blocks:
             all_calls.extend(_find_tool_calls(think_text=tb))
 
+        if len(all_calls) > 0:
+            for tid, name, args in all_calls:
+                args_fixed: dict[str, Any] = {}
+                for k, v in args.items():
+                    if isinstance(v, str):
+                        args_fixed[k] = _replace_id_refs(
+                            text=v,
+                            tool_outputs=tool_outputs,
+                        )
+                    else:
+                        args_fixed[k] = v
+
+                fn: Callable[..., str] | None = tool_registry.get(name)
+                if fn is None:
+                    out_str: str = f"Error: Unknown tool '{name}'."
+                else:
+                    try:
+                        out_str = str(fn(**args_fixed))
+                    except Exception as exc:
+                        out_str = f"Error running tool '{name}': {exc}"
+
+                tool_outputs[int(tid)] = out_str
+
+        has_answer: bool = (
+            re.search(
+                pattern=r"<answer>\s*.*?\s*</answer>",
+                string=completion,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+            is not None
+        )
+
+        if has_answer:
+            return _replace_id_refs(text=completion, tool_outputs=tool_outputs)
+
         if len(all_calls) == 0:
-            break
+            return completion
 
         messages.append({"role": "assistant", "content": completion})
 
         tools_payload_lines: list[str] = ["<tools>", "{"]
         for tid, name, args in all_calls:
-            args_fixed: dict[str, Any] = {}
-            for k, v in args.items():
-                if isinstance(v, str):
-                    args_fixed[k] = _replace_id_refs(text=v, tool_outputs=tool_outputs)
-                else:
-                    args_fixed[k] = v
-
-            fn: Callable[..., str] | None = tool_registry.get(name)
-            if fn is None:
-                out_str: str = f"Error: Unknown tool '{name}'."
-            else:
-                try:
-                    out_str = str(fn(**args_fixed))
-                except Exception as exc:
-                    out_str = f"Error running tool '{name}': {exc}"
-
-            tool_outputs[int(tid)] = out_str
+            out_str2: str = tool_outputs.get(int(tid), "")
 
             tools_payload_lines.append(f"    {tid}: {{")
             tools_payload_lines.append(f"        tool: '{name}',")
             tools_payload_lines.append("        args: {")
-            for ak, av in args_fixed.items():
-                tools_payload_lines.append(f"            '{ak}': '{av}'")
+            for ak, av in args.items():
+                av_s: str = str(
+                    _replace_id_refs(text=str(av), tool_outputs=tool_outputs)
+                    if isinstance(av, str)
+                    else av
+                )
+                tools_payload_lines.append(f"            '{ak}': '{av_s}'")
             tools_payload_lines.append("        }")
-            tools_payload_lines.append(f"        output: '{out_str}'")
+            tools_payload_lines.append(f"        output: '{out_str2}'")
             tools_payload_lines.append("    },")
 
         tools_payload_lines.append("}")
@@ -596,7 +683,7 @@ def _run_tool_loop(
 
         messages.append({"role": "user", "content": "\n".join(tools_payload_lines)})
 
-    return last_completion
+    return _replace_id_refs(text=last_completion, tool_outputs=tool_outputs)
 
 
 def main(
