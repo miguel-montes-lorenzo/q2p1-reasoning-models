@@ -233,8 +233,8 @@ def _write_answers_json(
     """Write outputs to JSON with the required contract.
 
     Contract:
-      - non-parsed fields: full think-tools-answer with UNFORMATTED <id=...> in answer
-      - parsed_* fields: ONLY the <answer>...</answer> section with formatted <id=...>
+      - non-parsed fields: full think-tools-answer (answer may contain raw @i references)
+      - parsed_* fields: ONLY the <answer>...</answer> section with formatted @i
     """
     assert len(items) == len(base_full) == len(base_parsed_answer)
     assert len(adapter_full) == len(adapter_names) == len(adapter_parsed_answer)
@@ -459,12 +459,6 @@ def _run_tool_use_inference(
             tokenizer=tokenizer,
             cfg=cfg,
         )
-
-        should_continue: bool
-        prompt_appendix: str
-        raw_full: str
-        _formatted_full: str
-        parsed_answer_only: str
 
         (
             should_continue,

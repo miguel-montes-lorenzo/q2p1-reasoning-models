@@ -33,9 +33,8 @@ def insert_tool_desciptions_in_system_propt(descriptions: dict[str, str]) -> str
 
 _ALLOWED_PARENT_TAGS: tuple[str, ...] = ("question", "think", "tools", "answer")
 
-_ERR_BAD_TOOL_FORMAT: str = "Error: bad format for <tool ...> tag"
-_ERR_BAD_ID_FORMAT: str = "Error: bad format for <id ...> tag"
-_ERR_ID_UNIDENTIFIED: str = "Error: <id ...> tag references unidentified result"
+_ERR_BAD_TOOL_FORMAT: str = "Error: bad format for tool call"
+_ERR_ID_UNIDENTIFIED: str = "Error: @i references unidentified result"
 _ERR_CONTENT_OUTSIDE: str = "Error: content outside of any tag section"
 _ERR_MISSING_ANSWER: str = "Error: missing <answer> section"
 
@@ -47,7 +46,7 @@ class ToolCall:
     Attributes:
         tool_id: Integer id for the tool call.
         name: Tool name.
-        raw_args: Args dict with raw string values (may contain <id=...>).
+        raw_args: Args dict with raw string values (may contain @i).
         deps: Referenced tool ids inside args values.
     """
 
@@ -138,92 +137,8 @@ def _extract_single_parent(
     return None
 
 
-def _iter_id_tags(*, text: str) -> list[str]:
-    """Return all raw '<id...>' tags found in text."""
-    return [
-        m.group(0) for m in re.finditer(r"<\s*id\b[^>]*>", text, flags=re.IGNORECASE)
-    ]
-
-
-def _validate_id_tags(*, text: str) -> bool:
-    """Validate that all <id ...> are exactly '<id=INTEGER>'."""
-    for raw in _iter_id_tags(text=text):
-        if re.fullmatch(r"<id=\d+>", raw) is None:
-            return False
-    return True
-
-
-def _validate_no_tool_end_tags(*, text: str) -> bool:
-    """Disallow '</tool>' and self-closing '<tool .../>'."""
-    if re.search(r"</\s*tool\s*>", text, flags=re.IGNORECASE) is not None:
-        return False
-    if re.search(r"<tool\b[^>]*/\s*>", text, flags=re.IGNORECASE) is not None:
-        return False
-    return True
-
-
-def _iter_tool_start_tags(*, text: str) -> list[str]:
-    """Extract <tool ...> start tags while honoring quotes inside attributes.
-
-    This prevents truncating tags when '>' appears inside quoted values, e.g.
-    args={expression='<id=1> / <id=2>'}.
-
-    Args:
-        text: A think block's inner text.
-
-    Returns:
-        List of full '<tool ...>' start tag strings.
-    """
-    tags: list[str] = []
-    i: int = 0
-    n: int = len(text)
-
-    while True:
-        start: int = text.find("<tool", i)
-        if start == -1:
-            break
-
-        j: int = start
-        quote: str | None = None
-        escape: bool = False
-
-        while j < n:
-            ch: str = text[j]
-
-            if escape:
-                escape = False
-                j += 1
-                continue
-
-            if ch == "\\":
-                escape = True
-                j += 1
-                continue
-
-            if quote is None and ch in ("'", '"'):
-                quote = ch
-                j += 1
-                continue
-
-            if quote is not None and ch == quote:
-                quote = None
-                j += 1
-                continue
-
-            if ch == ">" and quote is None:
-                tags.append(text[start : j + 1])
-                i = j + 1
-                break
-
-            j += 1
-        else:
-            break
-
-    return tags
-
-
 def _split_args_items(*, args_body: str) -> list[str]:
-    """Split args dict entries by commas, respecting quotes and escapes."""
+    """Split call arguments by commas, respecting quotes and escapes."""
     items: list[str] = []
     current: list[str] = []
     quote: str | None = None
@@ -271,15 +186,21 @@ def _unescape_value(*, value: str) -> str:
     return value.replace("\\'", "'").replace('\\"', '"')
 
 
-def _parse_args_dict(*, args_body: str) -> dict[str, str]:
-    """Parse args={...} content into dict[str, str].
+# --- tool_use/tool_handler.py (ONLY the minimal changes) ---
+
+
+def _parse_call_args(*, args_body: str) -> dict[str, str]:
+    """Parse @tool_name(...) argument content into dict[str, str].
 
     Accepted formats:
       - key="value" / key='value'
       - "key": "value" / 'key': 'value'
 
+    Note:
+      - Treat \" as " and \' as ' (i.e., allow backslash-quoted strings).
+
     Args:
-        args_body: Inside args={...} without braces.
+        args_body: Inside (...) without parentheses.
 
     Returns:
         Parsed args mapping.
@@ -287,6 +208,9 @@ def _parse_args_dict(*, args_body: str) -> dict[str, str]:
     Raises:
         ValueError: If any item cannot be parsed.
     """
+    # Treat \" as " and \' as ' for parsing purposes.
+    args_body = args_body.replace('\\"', '"').replace("\\'", "'")
+
     args: dict[str, str] = {}
 
     patterns: list[re.Pattern[str]] = [
@@ -326,45 +250,116 @@ def _parse_args_dict(*, args_body: str) -> dict[str, str]:
     return args
 
 
-def _parse_tool_start_tag(*, tag_text: str) -> tuple[int, str, str]:
-    """Parse a strict <tool ...> start tag.
+def _iter_tool_calls(*, text: str) -> list[tuple[str, str, str]]:
+    """Extract @tool_name(...):i calls from text.
 
-    Required format:
-      <tool id=INTEGER name=IDENT args={...}>
+    This scanner respects quotes and backslash escapes inside (...).
+
+    Special-case:
+      - Interpret \" as a literal " quote delimiter (same for \').
 
     Args:
-        tag_text: Raw start tag text.
+        text: A think block's inner text.
 
     Returns:
-        (tool_id, tool_name, args_body_inside_braces)
-
-    Raises:
-        ValueError: If parsing fails.
+        List of (tool_name, args_body, id_str) in document order.
     """
-    m: re.Match[str] | None = re.fullmatch(
-        pattern=(
-            r"<tool\s+id\s*=\s*(\d+)\s+"
-            r"name\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s+"
-            r"args\s*=\s*\{(.*)\}\s*>"
-        ),
-        string=tag_text,
-        flags=re.DOTALL,
-    )
-    if m is None:
-        raise ValueError("bad_tool_tag")
-    return int(m.group(1)), m.group(2), m.group(3)
+    calls: list[tuple[str, str, str]] = []
+    i: int = 0
+    n: int = len(text)
+
+    while i < n:
+        start: int = text.find("@", i)
+        if start == -1:
+            break
+
+        if start + 1 >= n or not re.match(r"[A-Za-z_]", text[start + 1]):
+            i = start + 1
+            continue
+
+        m_name: re.Match[str] | None = re.match(
+            pattern=r"@([A-Za-z_][A-Za-z0-9_]*)\(",
+            string=text[start:],
+            flags=re.DOTALL,
+        )
+        if m_name is None:
+            i = start + 1
+            continue
+
+        tool_name: str = m_name.group(1)
+        j: int = start + len(m_name.group(0))  # position right after '('
+
+        quote: str | None = None
+        escape: bool = False
+
+        while j < n:
+            ch: str = text[j]
+
+            # Treat \" and \' as actual quotes (skip the backslash).
+            if ch == "\\" and (j + 1) < n and text[j + 1] in ("'", '"'):
+                j += 1
+                continue
+
+            if escape:
+                escape = False
+                j += 1
+                continue
+
+            if ch == "\\":
+                escape = True
+                j += 1
+                continue
+
+            if quote is None and ch in ("'", '"'):
+                quote = ch
+                j += 1
+                continue
+
+            if quote is not None and ch == quote:
+                quote = None
+                j += 1
+                continue
+
+            if ch == ")" and quote is None:
+                break
+
+            j += 1
+
+        if j >= n or text[j] != ")":
+            i = start + 1
+            continue
+
+        args_body: str = text[start + len(f"@{tool_name}(") : j]
+
+        k: int = j + 1
+        if k >= n or text[k] != ":":
+            i = start + 1
+            continue
+
+        k += 1
+        m_id: re.Match[str] | None = re.match(pattern=r"(\d+)", string=text[k:])
+        if m_id is None:
+            i = start + 1
+            continue
+
+        id_str: str = m_id.group(1)
+        calls.append((tool_name, args_body, id_str))
+
+        i = k + len(id_str)
+
+    return calls
 
 
 def _extract_id_deps(*, value: str) -> set[int]:
-    """Extract referenced ids from a string value."""
+    """Extract referenced ids (@i) from a string value."""
     deps: set[int] = set()
-    for m in re.finditer(r"<id=(\d+)>", value):
+    for m in re.finditer(r"@(\d+)", value):
         deps.add(int(m.group(1)))
     return deps
 
 
 def _format_ids_strict(*, text: str, outputs: dict[int, str]) -> str:
-    """Replace <id=N> with outputs[N]. Missing ids are left intact."""
+    """Replace @i with outputs[i]. Missing ids are left intact."""
 
     def repl(match: re.Match[str]) -> str:
         ref_id: int = int(match.group(1))
@@ -372,11 +367,11 @@ def _format_ids_strict(*, text: str, outputs: dict[int, str]) -> str:
             return outputs[ref_id]
         return match.group(0)
 
-    return re.sub(pattern=r"<id=(\d+)>", repl=repl, string=text)
+    return re.sub(pattern=r"@(\d+)", repl=repl, string=text)
 
 
 def _resolve_ids_or_raise(*, value: str, outputs: dict[int, str]) -> str:
-    """Replace all <id=N> with outputs[N]. Missing ids raise ValueError."""
+    """Replace all @i with outputs[i]. Missing ids raise ValueError."""
 
     def repl(match: re.Match[str]) -> str:
         ref_id: int = int(match.group(1))
@@ -384,7 +379,7 @@ def _resolve_ids_or_raise(*, value: str, outputs: dict[int, str]) -> str:
             raise ValueError("id_unidentified")
         return outputs[ref_id]
 
-    return re.sub(pattern=r"<id=(\d+)>", repl=repl, string=value)
+    return re.sub(pattern=r"@(\d+)", repl=repl, string=value)
 
 
 def _get_tool_fn(*, tool_dict: dict[str, Any], name: str) -> Callable[..., str]:
@@ -444,15 +439,15 @@ def _render_tools_block(*, records: list[dict[str, Any]]) -> str:
         output: str = str(rec["output"])
 
         lines.append(f"    {tool_id}: {{")
-        lines.append(f'        tool: "{tool_name}",')
+        lines.append(f"        tool: '{tool_name}',")
         lines.append("        args: {")
         for k, v in args.items():
-            escaped_v: str = v.replace('"', r"\"")
-            lines.append(f'            "{k}": "{escaped_v}"')
-        lines.append("        }")
-        escaped_out: str = output.replace('"', r"\"")
-        lines.append(f'        output: "{escaped_out}"')
-        lines.append("    }")
+            escaped_v: str = v.replace("'", "\\'")
+            lines.append(f"            '{k}': '{escaped_v}',")
+        lines.append("        },")
+        escaped_out: str = output.replace("'", "\\'")
+        lines.append(f"        output: '{escaped_out}'")
+        lines.append("    },")
 
     lines.append("}")
     lines.append("</tools>")
@@ -465,9 +460,8 @@ def _parse_iteration(*, model_output: str) -> ParsedIteration:
     Enforced rules:
       - Parent blocks are valid only if top-level and properly closed.
       - Content outside parent blocks is ignored (never an error).
-      - <id=...> tags are validated only inside think+answer.
-      - <tool ...> calls are parsed only inside think.
-      - <tool ...> tags are forbidden inside answer.
+      - Tool calls are parsed only inside <think>.
+      - Tool calls are forbidden inside <answer> (but @i references are allowed).
 
     Args:
         model_output: Raw model output text.
@@ -482,42 +476,23 @@ def _parse_iteration(*, model_output: str) -> ParsedIteration:
     think: str | None = _extract_single_parent(blocks=blocks, tag="think")
     answer: str | None = _extract_single_parent(blocks=blocks, tag="answer")
 
-    # Forbid <tool ...> inside answer.
+    # Forbid tool calls inside answer: @NAME(...)
     if answer is not None:
-        if (
-            re.search(pattern=r"<tool\b", string=answer, flags=re.IGNORECASE)
-            is not None
-        ):
+        if re.search(pattern=r"@[A-Za-z_][A-Za-z0-9_]*\(", string=answer) is not None:
             return ParsedIteration(
                 think=think, answer=answer, tool_calls=[], error=_ERR_BAD_TOOL_FORMAT
             )
 
-    # Validate <id ...> format inside think+answer only.
-    inner_concat: str = ""
-    if think is not None:
-        inner_concat += think
-    if answer is not None:
-        inner_concat += answer
-    if not _validate_id_tags(text=inner_concat):
-        return ParsedIteration(
-            think=think, answer=answer, tool_calls=[], error=_ERR_BAD_ID_FORMAT
-        )
-
     if think is None:
         return ParsedIteration(think=None, answer=answer, tool_calls=[], error=None)
 
-    if not _validate_no_tool_end_tags(text=think):
-        return ParsedIteration(
-            think=think, answer=answer, tool_calls=[], error=_ERR_BAD_TOOL_FORMAT
-        )
-
-    tool_tags: list[str] = _iter_tool_start_tags(text=think)
+    tool_calls_raw: list[tuple[str, str, str]] = _iter_tool_calls(text=think)
     tool_calls: list[ToolCall] = []
 
-    for raw_tool_tag in tool_tags:
+    for tool_name, args_body, id_str in tool_calls_raw:
         try:
-            tool_id, tool_name, args_body = _parse_tool_start_tag(tag_text=raw_tool_tag)
-            raw_args: dict[str, str] = _parse_args_dict(args_body=args_body)
+            tool_id: int = int(id_str)
+            raw_args: dict[str, str] = _parse_call_args(args_body=args_body)
         except Exception:
             return ParsedIteration(
                 think=think, answer=answer, tool_calls=[], error=_ERR_BAD_TOOL_FORMAT
@@ -631,9 +606,9 @@ def parse_and_execute_tool_call(
         else "<tools>\n{\n}\n</tools>"
     )
 
-    # If answer exists: validate <id=...> refs and return final outputs.
+    # If answer exists: validate @i refs and return final outputs.
     if parsed.answer is not None:
-        for m in re.finditer(r"<id=(\d+)>", parsed.answer):
+        for m in re.finditer(r"@(\d+)", parsed.answer):
             ref_id: int = int(m.group(1))
             if ref_id not in outputs_all:
                 forced_answer = f"<answer>{_ERR_ID_UNIDENTIFIED}</answer>"
