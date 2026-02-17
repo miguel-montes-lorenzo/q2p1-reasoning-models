@@ -50,9 +50,12 @@ services:
       - ${REPO_PATH}/tool_use:/home/root/tool_use
       - ${REPO_PATH}/rag:/home/root/rag
       - ${REPO_PATH}/weights:/home/root/weights
-      - ${REPO_PATH}/utils.py:/home/root/utils.py
+      - ${REPO_PATH}/utils:/home/root/utils
 
       - ${REAL_HF_CACHE}:/home/root/.cache/huggingface
+
+      # - ${REPO_PATH}/web/public:/home/root/web/public
+      - ${REPO_PATH}/web:/home/root/web
 
       # - /:/home/root/admin
 

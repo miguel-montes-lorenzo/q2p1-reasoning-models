@@ -1,4 +1,4 @@
-/* web/public/styles.css */
+/* web/styles.css */
 :root {
   --bg: #0f1115;
   --panel: #161a22;
@@ -219,7 +219,6 @@ body {
   word-break: break-word;
 }
 
-/* Tag label: now always visible because it inherits a readable color */
 .bubble .tag {
   font-family: var(--mono);
   font-size: 12px;

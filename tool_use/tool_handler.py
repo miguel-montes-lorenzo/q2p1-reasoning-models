@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 from collections import defaultdict, deque
 from collections.abc import Callable
@@ -33,10 +34,14 @@ def insert_tool_desciptions_in_system_propt(descriptions: dict[str, str]) -> str
 
 _ALLOWED_PARENT_TAGS: tuple[str, ...] = ("question", "think", "tools", "answer")
 
-_ERR_BAD_TOOL_FORMAT: str = "Error: bad format for tool call"
-_ERR_ID_UNIDENTIFIED: str = "Error: @i references unidentified result"
-_ERR_CONTENT_OUTSIDE: str = "Error: content outside of any tag section"
-_ERR_MISSING_ANSWER: str = "Error: missing <answer> section"
+# These strings must match the "ALLOWED ERROR MESSAGES" contract.
+_ERR_INCORRECT_AT_USE: str = (
+    "Incorrect use of @, allowed formats are: "
+    "{@available_funcion_name(arg1=..., arg2=..., ...):int_id, @defined_int_id}"
+)
+_ERR_CALL_UNEXISTENT_FUNCTION_PREFIX: str = "Call to unexistent function: "
+_ERR_REF_UNDEFINED_ID_PREFIX: str = "Reference to undefined id: "
+_ERR_UNEXISTENT_ARGUMENTS_PREFIX: str = "Use of unexistent arguments for function "
 
 
 @dataclass(frozen=True)
@@ -120,7 +125,7 @@ def _find_valid_parent_blocks(*, text: str) -> list[tuple[str, int, int, str]]:
         stack.pop()
         inner: str = text[top_e:s]
         if stack:
-            continue  # nested -> not a parent block
+            continue
         blocks.append((tag, top_s, e, inner))
 
     blocks.sort(key=lambda x: x[1])
@@ -186,9 +191,6 @@ def _unescape_value(*, value: str) -> str:
     return value.replace("\\'", "'").replace('\\"', '"')
 
 
-# --- tool_use/tool_handler.py (ONLY the minimal changes) ---
-
-
 def _parse_call_args(*, args_body: str) -> dict[str, str]:
     """Parse @tool_name(...) argument content into dict[str, str].
 
@@ -197,7 +199,7 @@ def _parse_call_args(*, args_body: str) -> dict[str, str]:
       - "key": "value" / 'key': 'value'
 
     Note:
-      - Treat \" as " and \' as ' (i.e., allow backslash-quoted strings).
+      - Treat \" as " and \' as ' for parsing purposes.
 
     Args:
         args_body: Inside (...) without parentheses.
@@ -208,7 +210,6 @@ def _parse_call_args(*, args_body: str) -> dict[str, str]:
     Raises:
         ValueError: If any item cannot be parsed.
     """
-    # Treat \" as " and \' as ' for parsing purposes.
     args_body = args_body.replace('\\"', '"').replace("\\'", "'")
 
     args: dict[str, str] = {}
@@ -255,9 +256,6 @@ def _iter_tool_calls(*, text: str) -> list[tuple[str, str, str]]:
 
     This scanner respects quotes and backslash escapes inside (...).
 
-    Special-case:
-      - Interpret \" as a literal " quote delimiter (same for \').
-
     Args:
         text: A think block's inner text.
 
@@ -273,7 +271,7 @@ def _iter_tool_calls(*, text: str) -> list[tuple[str, str, str]]:
         if start == -1:
             break
 
-        if start + 1 >= n or not re.match(r"[A-Za-z_]", text[start + 1]):
+        if start + 1 >= n or re.match(r"[A-Za-z_]", text[start + 1]) is None:
             i = start + 1
             continue
 
@@ -287,7 +285,7 @@ def _iter_tool_calls(*, text: str) -> list[tuple[str, str, str]]:
             continue
 
         tool_name: str = m_name.group(1)
-        j: int = start + len(m_name.group(0))  # position right after '('
+        j: int = start + len(m_name.group(0))
 
         quote: str | None = None
         escape: bool = False
@@ -295,7 +293,6 @@ def _iter_tool_calls(*, text: str) -> list[tuple[str, str, str]]:
         while j < n:
             ch: str = text[j]
 
-            # Treat \" and \' as actual quotes (skip the backslash).
             if ch == "\\" and (j + 1) < n and text[j + 1] in ("'", '"'):
                 j += 1
                 continue
@@ -376,7 +373,7 @@ def _resolve_ids_or_raise(*, value: str, outputs: dict[int, str]) -> str:
     def repl(match: re.Match[str]) -> str:
         ref_id: int = int(match.group(1))
         if ref_id not in outputs:
-            raise ValueError("id_unidentified")
+            raise ValueError(f"undefined_id:{ref_id}")
         return outputs[ref_id]
 
     return re.sub(pattern=r"@(\d+)", repl=repl, string=value)
@@ -384,12 +381,45 @@ def _resolve_ids_or_raise(*, value: str, outputs: dict[int, str]) -> str:
 
 def _get_tool_fn(*, tool_dict: dict[str, Any], name: str) -> Callable[..., str]:
     """Return tool function by name."""
-    if name not in tool_dict:
-        raise ValueError("unknown_tool")
-    fn_any: Any = tool_dict[name].get("function")
+    fn_any: Any = tool_dict.get(name, {}).get("function")
     if not callable(fn_any):
-        raise ValueError("tool_not_callable")
+        raise ValueError("unknown_tool")
     return fn_any
+
+
+def _validate_kwargs_or_raise(
+    *, fn: Callable[..., Any], tool_name: str, kwargs: dict[str, str]
+) -> None:
+    """Validate that kwargs exist in the function signature.
+
+    Args:
+        fn: Callable tool function.
+        tool_name: Tool name (for error formatting).
+        kwargs: Parsed keyword arguments.
+
+    Raises:
+        ValueError: If any argument name is not accepted by the function.
+    """
+    sig: inspect.Signature = inspect.signature(fn)
+    params: dict[str, inspect.Parameter] = dict(sig.parameters)
+
+    has_var_kw: bool = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    if has_var_kw:
+        return
+
+    allowed: set[str] = set()
+    for name, p in params.items():
+        if p.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            allowed.add(name)
+
+    for k in kwargs:
+        if k not in allowed:
+            raise ValueError(f"bad_arg:{tool_name}:{k}")
 
 
 def _toposort_tools(*, calls: list[ToolCall]) -> list[ToolCall] | None:
@@ -454,17 +484,131 @@ def _render_tools_block(*, records: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _parse_iteration(*, model_output: str) -> ParsedIteration:
+def _render_error_block(*, error_message: str) -> str:
+    """Render an <error> block."""
+    return f"<error>{error_message}</error>"
+
+
+def _find_first_invalid_at_use(
+    *, text: str, tool_names: set[str]
+) -> tuple[bool, str | None]:
+    """Validate that every '@' use matches allowed formats.
+
+    Allowed formats:
+      - @TOOL_NAME(...):i
+      - @i
+
+    Args:
+        text: Think block inner text.
+        tool_names: Set of available tool names.
+
+    Returns:
+        (ok, error_message_if_any)
+    """
+    n: int = len(text)
+    i: int = 0
+
+    while i < n:
+        at_pos: int = text.find("@", i)
+        if at_pos == -1:
+            return True, None
+
+        if at_pos + 1 >= n:
+            return False, _ERR_INCORRECT_AT_USE
+
+        nxt: str = text[at_pos + 1]
+
+        if nxt.isdigit():
+            j: int = at_pos + 1
+            while j < n and text[j].isdigit():
+                j += 1
+            i = j
+            continue
+
+        if re.match(r"[A-Za-z_]", nxt) is None:
+            return False, _ERR_INCORRECT_AT_USE
+
+        m_name: re.Match[str] | None = re.match(
+            pattern=r"@([A-Za-z_][A-Za-z0-9_]*)\(",
+            string=text[at_pos:],
+            flags=re.DOTALL,
+        )
+        if m_name is None:
+            return False, _ERR_INCORRECT_AT_USE
+
+        tool_name: str = m_name.group(1)
+        if tool_name not in tool_names:
+            return False, f"{_ERR_CALL_UNEXISTENT_FUNCTION_PREFIX}@{tool_name}"
+
+        j2: int = at_pos + len(m_name.group(0))
+        quote: str | None = None
+        escape: bool = False
+
+        while j2 < n:
+            ch: str = text[j2]
+
+            if ch == "\\" and (j2 + 1) < n and text[j2 + 1] in ("'", '"'):
+                j2 += 1
+                continue
+
+            if escape:
+                escape = False
+                j2 += 1
+                continue
+
+            if ch == "\\":
+                escape = True
+                j2 += 1
+                continue
+
+            if quote is None and ch in ("'", '"'):
+                quote = ch
+                j2 += 1
+                continue
+
+            if quote is not None and ch == quote:
+                quote = None
+                j2 += 1
+                continue
+
+            if ch == ")" and quote is None:
+                break
+
+            j2 += 1
+
+        if j2 >= n or text[j2] != ")":
+            return False, _ERR_INCORRECT_AT_USE
+
+        k: int = j2 + 1
+        if k >= n or text[k] != ":":
+            return False, _ERR_INCORRECT_AT_USE
+
+        k += 1
+        if k >= n or not text[k].isdigit():
+            return False, _ERR_INCORRECT_AT_USE
+
+        while k < n and text[k].isdigit():
+            k += 1
+
+        i = k
+
+    return True, None
+
+
+def _parse_iteration(
+    *, model_output: str, tool_dict: dict[str, Any]
+) -> ParsedIteration:
     """Parse a model output into think/answer/tool calls or an error.
 
     Enforced rules:
       - Parent blocks are valid only if top-level and properly closed.
-      - Content outside parent blocks is ignored (never an error).
+      - Content outside parent blocks is ignored.
       - Tool calls are parsed only inside <think>.
-      - Tool calls are forbidden inside <answer> (but @i references are allowed).
+      - Tool calls are forbidden inside <answer> (only @i refs are allowed).
 
     Args:
         model_output: Raw model output text.
+        tool_dict: Tool registry (used for tool-name validation).
 
     Returns:
         ParsedIteration containing sections and parsed tool calls, or an error.
@@ -476,26 +620,51 @@ def _parse_iteration(*, model_output: str) -> ParsedIteration:
     think: str | None = _extract_single_parent(blocks=blocks, tag="think")
     answer: str | None = _extract_single_parent(blocks=blocks, tag="answer")
 
-    # Forbid tool calls inside answer: @NAME(...)
     if answer is not None:
         if re.search(pattern=r"@[A-Za-z_][A-Za-z0-9_]*\(", string=answer) is not None:
             return ParsedIteration(
-                think=think, answer=answer, tool_calls=[], error=_ERR_BAD_TOOL_FORMAT
+                think=think, answer=answer, tool_calls=[], error=_ERR_INCORRECT_AT_USE
             )
+        if r"@" in answer:
+            if re.search(pattern=r"@(\d+)", string=answer) is None:
+                return ParsedIteration(
+                    think=think,
+                    answer=answer,
+                    tool_calls=[],
+                    error=_ERR_INCORRECT_AT_USE,
+                )
 
     if think is None:
         return ParsedIteration(think=None, answer=answer, tool_calls=[], error=None)
+
+    tool_names: set[str] = set(tool_dict.keys())
+    ok_at: bool
+    at_err: str | None
+    ok_at, at_err = _find_first_invalid_at_use(text=think, tool_names=tool_names)
+    if not ok_at:
+        return ParsedIteration(think=think, answer=answer, tool_calls=[], error=at_err)
 
     tool_calls_raw: list[tuple[str, str, str]] = _iter_tool_calls(text=think)
     tool_calls: list[ToolCall] = []
 
     for tool_name, args_body, id_str in tool_calls_raw:
+        if tool_name not in tool_dict:
+            return ParsedIteration(
+                think=think,
+                answer=answer,
+                tool_calls=[],
+                error=f"{_ERR_CALL_UNEXISTENT_FUNCTION_PREFIX}@{tool_name}",
+            )
+
         try:
             tool_id: int = int(id_str)
             raw_args: dict[str, str] = _parse_call_args(args_body=args_body)
         except Exception:
             return ParsedIteration(
-                think=think, answer=answer, tool_calls=[], error=_ERR_BAD_TOOL_FORMAT
+                think=think,
+                answer=answer,
+                tool_calls=[],
+                error=_ERR_INCORRECT_AT_USE,
             )
 
         deps: set[int] = set()
@@ -511,6 +680,36 @@ def _parse_iteration(*, model_output: str) -> ParsedIteration:
     )
 
 
+def _return_error_continue(
+    *,
+    think_block: str,
+    tools_block: str | None,
+    error_message: str,
+) -> tuple[bool, str, str, str, str]:
+    """Return an <error> block and force continuing the loop.
+
+    Any <answer> produced in the same iteration must be ignored.
+
+    Args:
+        think_block: Rendered <think>...</think>.
+        tools_block: Optional rendered <tools>...</tools>.
+        error_message: Error message to put inside <error>.
+
+    Returns:
+        (should_continue, prompt_appendix, raw_full, formatted_full, parsed_answer_only)
+    """
+    err_block: str = _render_error_block(error_message=error_message)
+    pieces: list[str] = [think_block]
+    if tools_block is not None:
+        pieces.append(tools_block)
+    pieces.append(err_block)
+
+    raw_full: str = "\n".join(pieces)
+    prompt_appendix: str = f"{raw_full}\n"
+    parsed_answer_only: str = "<answer>null</answer>"
+    return True, prompt_appendix, raw_full, raw_full, parsed_answer_only
+
+
 def parse_and_execute_tool_call(
     model_output: str,
     tool_dict: dict[str, Any],
@@ -521,6 +720,20 @@ def parse_and_execute_tool_call(
 ) -> tuple[bool, str, str, str, str]:
     """Parse one iteration, optionally execute tools, and decide whether to continue.
 
+    Rules implemented:
+      - On any tool format/semantic error: return <error>...</error> and CONTINUE.
+        Any <answer> in the same iteration is ignored.
+      - Tool ids are globally unique across the entire loop.
+      - If a valid non-null <answer> exists, format @i references and STOP.
+      - If <answer>null</answer> is produced by the model, do NOT stop early.
+
+    Args:
+        model_output: Raw model output from the LLM.
+        tool_dict: Tool registry.
+        max_calls: Maximum iterations (not enforced here, only in the caller).
+        used_tool_ids: Global used ids across the loop.
+        global_outputs: Global tool outputs across the loop.
+
     Returns:
         (should_continue, prompt_appendix, raw_full_output, formatted_full_output,
          parsed_answer_only)
@@ -530,38 +743,39 @@ def parse_and_execute_tool_call(
     used_ids: set[int] = used_tool_ids if used_tool_ids is not None else set()
     outputs_all: dict[int, str] = global_outputs if global_outputs is not None else {}
 
-    parsed: ParsedIteration = _parse_iteration(model_output=model_output)
-    if parsed.error is not None:
-        think_block: str = (
-            f"<think>{parsed.think}</think>"
-            if parsed.think is not None
-            else "<think></think>"
-        )
-        forced_answer: str = f"<answer>{parsed.error}</answer>"
-        raw_full: str = f"{think_block}\n{forced_answer}"
-        return False, "", raw_full, raw_full, forced_answer
+    parsed: ParsedIteration = _parse_iteration(
+        model_output=model_output,
+        tool_dict=tool_dict,
+    )
 
     think_block: str = (
         f"<think>{parsed.think}</think>"
         if parsed.think is not None
         else "<think></think>"
     )
-    answer_block_raw: str | None = None
-    if parsed.answer is not None:
-        answer_block_raw = f"<answer>{parsed.answer}</answer>"
 
-    # Global uniqueness of tool ids.
+    if parsed.error is not None:
+        return _return_error_continue(
+            think_block=think_block,
+            tools_block=None,
+            error_message=str(parsed.error),
+        )
+
     for c in parsed.tool_calls:
         if c.tool_id in used_ids:
-            forced_answer = f"<answer>{_ERR_BAD_TOOL_FORMAT}</answer>"
-            raw_full = f"{think_block}\n{forced_answer}"
-            return False, "", raw_full, raw_full, forced_answer
+            return _return_error_continue(
+                think_block=think_block,
+                tools_block=None,
+                error_message=_ERR_INCORRECT_AT_USE,
+            )
 
     topo: list[ToolCall] | None = _toposort_tools(calls=parsed.tool_calls)
     if topo is None:
-        forced_answer = f"<answer>{_ERR_BAD_TOOL_FORMAT}</answer>"
-        raw_full = f"{think_block}\n{forced_answer}"
-        return False, "", raw_full, raw_full, forced_answer
+        return _return_error_continue(
+            think_block=think_block,
+            tools_block=None,
+            error_message=_ERR_INCORRECT_AT_USE,
+        )
 
     tool_records: list[dict[str, Any]] = []
 
@@ -573,24 +787,56 @@ def parse_and_execute_tool_call(
                 k: _resolve_ids_or_raise(value=v, outputs=outputs_all)
                 for k, v in c.raw_args.items()
             }
-        except Exception:
-            forced_answer = f"<answer>{_ERR_ID_UNIDENTIFIED}</answer>"
-            raw_full = f"{think_block}\n{forced_answer}"
-            return False, "", raw_full, raw_full, forced_answer
+        except ValueError as e:
+            msg: str = str(e)
+            if msg.startswith("undefined_id:"):
+                ref_id: str = msg.split(":", 1)[1]
+                return _return_error_continue(
+                    think_block=think_block,
+                    tools_block=None,
+                    error_message=f"{_ERR_REF_UNDEFINED_ID_PREFIX}@{ref_id}",
+                )
+            return _return_error_continue(
+                think_block=think_block,
+                tools_block=None,
+                error_message=_ERR_INCORRECT_AT_USE,
+            )
 
         try:
             fn: Callable[..., str] = _get_tool_fn(tool_dict=tool_dict, name=c.name)
         except Exception:
-            forced_answer = f"<answer>{_ERR_BAD_TOOL_FORMAT}</answer>"
-            raw_full = f"{think_block}\n{forced_answer}"
-            return False, "", raw_full, raw_full, forced_answer
+            return _return_error_continue(
+                think_block=think_block,
+                tools_block=None,
+                error_message=f"{_ERR_CALL_UNEXISTENT_FUNCTION_PREFIX}@{c.name}",
+            )
 
         try:
-            result: str = fn(**resolved_args)
+            _validate_kwargs_or_raise(fn=fn, tool_name=c.name, kwargs=resolved_args)
+        except ValueError as e:
+            msg2: str = str(e)
+            if msg2.startswith("bad_arg:"):
+                _, tool_name, bad_arg = msg2.split(":", 2)
+                return _return_error_continue(
+                    think_block=think_block,
+                    tools_block=None,
+                    error_message=f"{_ERR_UNEXISTENT_ARGUMENTS_PREFIX}@{tool_name}: "
+                    f"{bad_arg}",
+                )
+            return _return_error_continue(
+                think_block=think_block,
+                tools_block=None,
+                error_message=_ERR_INCORRECT_AT_USE,
+            )
+
+        try:
+            result: str = str(fn(**resolved_args))
         except Exception:
-            forced_answer = f"<answer>{_ERR_BAD_TOOL_FORMAT}</answer>"
-            raw_full = f"{think_block}\n{forced_answer}"
-            return False, "", raw_full, raw_full, forced_answer
+            return _return_error_continue(
+                think_block=think_block,
+                tools_block=None,
+                error_message=_ERR_INCORRECT_AT_USE,
+            )
 
         outputs_all[c.tool_id] = result
         tool_records.append({
@@ -606,14 +852,47 @@ def parse_and_execute_tool_call(
         else "<tools>\n{\n}\n</tools>"
     )
 
-    # If answer exists: validate @i refs and return final outputs.
+    # Do NOT stop early if the model outputs <answer>null</answer>.
+    if parsed.answer is not None and parsed.answer.strip().lower() == "null":
+        resolved_records_for_prompt: list[dict[str, Any]] = []
+        for rec in tool_records:
+            raw_args: dict[str, str] = dict(rec["args"])
+            resolved_args: dict[str, str] = {}
+            for k, v in raw_args.items():
+                resolved_args[k] = _format_ids_strict(text=v, outputs=outputs_all)
+            resolved_records_for_prompt.append({
+                "id": rec["id"],
+                "tool": rec["tool"],
+                "args": resolved_args,
+                "output": rec["output"],
+            })
+
+        tools_block_for_prompt: str = (
+            _render_tools_block(records=resolved_records_for_prompt)
+            if resolved_records_for_prompt
+            else tools_block
+        )
+        prompt_appendix: str = f"{think_block}\n{tools_block_for_prompt}\n"
+        raw_full_output: str = f"{think_block}\n{tools_block}"
+        formatted_full_output: str = raw_full_output
+        parsed_answer_only: str = "<answer>null</answer>"
+        return (
+            True,
+            prompt_appendix,
+            raw_full_output,
+            formatted_full_output,
+            parsed_answer_only,
+        )
+
     if parsed.answer is not None:
         for m in re.finditer(r"@(\d+)", parsed.answer):
             ref_id: int = int(m.group(1))
             if ref_id not in outputs_all:
-                forced_answer = f"<answer>{_ERR_ID_UNIDENTIFIED}</answer>"
-                raw_full = f"{think_block}\n{forced_answer}"
-                return False, "", raw_full, raw_full, forced_answer
+                return _return_error_continue(
+                    think_block=think_block,
+                    tools_block=tools_block,
+                    error_message=f"{_ERR_REF_UNDEFINED_ID_PREFIX}@{ref_id}",
+                )
 
         answer_formatted_inner: str = _format_ids_strict(
             text=parsed.answer,
@@ -621,43 +900,41 @@ def parse_and_execute_tool_call(
         )
         parsed_answer_only: str = f"<answer>{answer_formatted_inner}</answer>"
 
-        raw_full_output: str = f"{think_block}\n{tools_block}\n{answer_block_raw}"
+        raw_full_output: str = (
+            f"{think_block}\n{tools_block}\n<answer>{parsed.answer}</answer>"
+        )
         formatted_full_output: str = (
             f"{think_block}\n{tools_block}\n{parsed_answer_only}"
         )
         return False, "", raw_full_output, formatted_full_output, parsed_answer_only
 
-    # No answer => continue, provide appendix with resolved ids in args.
-    resolved_records_for_prompt: list[dict[str, Any]] = []
+    resolved_records_for_prompt = []
     for rec in tool_records:
-        raw_args: dict[str, str] = dict(rec["args"])
-        resolved_args: dict[str, str] = {}
-        for k, v in raw_args.items():
-            resolved_args[k] = _format_ids_strict(text=v, outputs=outputs_all)
+        raw_args2: dict[str, str] = dict(rec["args"])
+        resolved_args2: dict[str, str] = {}
+        for k, v in raw_args2.items():
+            resolved_args2[k] = _format_ids_strict(text=v, outputs=outputs_all)
         resolved_records_for_prompt.append({
             "id": rec["id"],
             "tool": rec["tool"],
-            "args": resolved_args,
+            "args": resolved_args2,
             "output": rec["output"],
         })
 
-    tools_block_for_prompt: str = (
-        _render_tools_block(records=resolved_records_for_prompt)
-        if resolved_records_for_prompt
-        else tools_block
+    tools_block_for_prompt2: str = _render_tools_block(
+        records=resolved_records_for_prompt
     )
-
-    prompt_appendix: str = f"{think_block}\n{tools_block_for_prompt}\n"
-    raw_full_output = f"{think_block}\n{tools_block}"
-    formatted_full_output = raw_full_output
-    parsed_answer_only = f"<answer>{_ERR_MISSING_ANSWER}</answer>"
+    prompt_appendix2: str = f"{think_block}\n{tools_block_for_prompt2}\n"
+    raw_full_output2: str = f"{think_block}\n{tools_block}"
+    formatted_full_output2: str = raw_full_output2
+    parsed_answer_only2: str = "<answer>null</answer>"
 
     return (
         True,
-        prompt_appendix,
-        raw_full_output,
-        formatted_full_output,
-        parsed_answer_only,
+        prompt_appendix2,
+        raw_full_output2,
+        formatted_full_output2,
+        parsed_answer_only2,
     )
 
 
@@ -666,7 +943,7 @@ def ensure_response_contains_answer(full_prompt: str) -> str:
 
     Policy:
       - If model produced <answer>...</answer> (even empty), keep it.
-      - If missing, force a non-empty error answer.
+      - If missing, force <answer>null</answer>.
 
     Args:
         full_prompt: Final output candidate.
@@ -680,17 +957,4 @@ def ensure_response_contains_answer(full_prompt: str) -> str:
     )
     if has_answer:
         return full_prompt
-
-    think_match: re.Match[str] | None = re.search(
-        pattern=r"<think>.*?</think>",
-        string=full_prompt,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    think_block: str = (
-        think_match.group(0) if think_match is not None else "<think></think>"
-    )
-    forced_answer: str = f"<answer>{_ERR_MISSING_ANSWER}</answer>"
-
-    if full_prompt.strip() == think_block.strip():
-        return f"{think_block}\n{forced_answer}"
-    return f"{full_prompt}\n{forced_answer}"
+    return f"{full_prompt}\n<answer>null</answer>"

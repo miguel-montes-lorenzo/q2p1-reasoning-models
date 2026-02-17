@@ -57,3 +57,44 @@ Pydantic y Structured Outputs
 * **RLVF (Reinforcement Learning with Verification Feedback):** Una variante de RLHF donde la recompensa no la dan humanos, sino un sistema verificador determinista (ej. ejecutar código y ver si funciona, o comprobar si una solución matemática es correcta).
 * **GRPO (Group Relative Policy Optimization):** Un algoritmo de RL eficiente. En lugar de usar un modelo "crítico" para estimar el valor de una acción (lo que consume mucha memoria), GRPO muestrea un grupo de respuestas (ej. 8) para la misma pregunta. Calcula la recompensa de cada una y normaliza las puntuaciones basándose en la media de ese grupo. Las respuestas mejores que la media del grupo se refuerzan positivo, las peores negativo.
 * **ReAct (Reason + Act):** Un paradigma para agentes donde el modelo alterna entre generar pensamientos verbales y generar acciones (llamadas a herramientas).
+
+
+## Instrucciones útiles para el manejo del repo
+
+Crear el entorno de python (uv-managed):
+
+```bash
+venv
+```
+
+Instalar dependencias de python
+
+```bash
+uv sync
+```
+
+Descargar modelo preentrenado + crear un checkpoint de sft:
+```bash
+python -m rlm.train_sft
+```
+
+Levantar la api de ngrok:
+```bash
+cd api/
+chmod +x ./up.sh && ./up.sh
+chmod +x ./attach.sh && ./attach.sh  # esto abre una terminal dentro del contenedor
+launch_ngrok  # esto pide el authtoken de ngrok y a continuación levanta el servicio
+# Ctrl + C para terminar el servicio
+```
+
+Probar la api de ngrok a través de curl
+```bash
+# (en una nueva terminal)
+curl -X POST "https://unrefractory-ella-overbulky.ngrok-free.dev/phase1/reasoning" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "What is 2 + 2?"}'
+```
+
+Acceder a la UI web:
+- Copiar la URL de ./api/ngrok-url
+- Pegarla en el navegador

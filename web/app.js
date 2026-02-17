@@ -1,10 +1,15 @@
-
-// web/public/app.js
+// web/app.js
 const state = {
   activeTab: "phase1",
   backendUrl: null,
-  tagColors: { user: "#8ecbff", think: "#e6e6e6", answer: "#b9f6ca" },
-  tagVisible: { user: true, think: true, answer: true },
+  tagColors: {
+    user: "#8ecbff",
+    think: "#e6e6e6",
+    tools: "#f0f0f0", // light gray for tools
+    answer: "#b9f6ca",
+    error: "#ffd6d6",
+  },
+  tagVisible: { user: true, think: true, tools: true, answer: true, error: true },
   chats: {
     phase1: [],
     phase2: [],
@@ -34,8 +39,6 @@ function setSending(isSending) {
   el.sendBtn.disabled = state.isSending;
   el.promptInput.disabled = state.isSending;
 
-  // Change button appearance with existing classes (no CSS required).
-  // While sending, it becomes a "disabled-like" button.
   el.sendBtn.classList.toggle("primary", !state.isSending);
   el.sendBtn.classList.toggle("danger", state.isSending);
 
@@ -50,6 +53,8 @@ function parseTaggedResponse(text) {
   const out = [];
   const patterns = [
     { tag: "think", re: /<think>([\s\S]*?)<\/think>/gi },
+    { tag: "tools", re: /<tools>([\s\S]*?)<\/tools>/gi },
+    { tag: "error", re: /<error>([\s\S]*?)<\/error>/gi },
     { tag: "answer", re: /<answer>([\s\S]*?)<\/answer>/gi },
   ];
 
@@ -61,7 +66,7 @@ function parseTaggedResponse(text) {
         tag: p.tag,
         start: m.index,
         end: m.index + m[0].length,
-        content: m[1].trim(),
+        content: (m[1] ?? "").trim(),
       });
     }
   }
@@ -75,6 +80,8 @@ function parseTaggedResponse(text) {
 
   const stripped = text
     .replaceAll(/<think>[\s\S]*?<\/think>/gi, "")
+    .replaceAll(/<tools>[\s\S]*?<\/tools>/gi, "")
+    .replaceAll(/<error>[\s\S]*?<\/error>/gi, "")
     .replaceAll(/<answer>[\s\S]*?<\/answer>/gi, "")
     .trim();
   if (stripped.length > 0) out.push({ tag: "answer", content: stripped });
@@ -196,7 +203,10 @@ async function refreshConfig() {
   const data = await resp.json();
 
   state.backendUrl = data.backendUrl ?? null;
-  state.tagColors = data.tagColors ?? state.tagColors;
+
+  // Merge tagColors so new tags (tools/error) remain available even if backend config omits them.
+  const incoming = data.tagColors ?? {};
+  state.tagColors = { ...state.tagColors, ...incoming };
 
   el.backendPortValue.textContent =
     state.backendUrl == null ? "unknown" : String(state.backendUrl);
@@ -210,10 +220,10 @@ async function refreshConfig() {
 }
 
 function endpointForTab(tab) {
-  if (tab === "phase1") return "/api/phase1/reasoning";
-  if (tab === "phase2") return "/api/phase2/tools";
-  if (tab === "phase3") return "/api/phase3/rag";
-  return "/api/phase4/agent";
+  if (tab === "phase1") return "/phase1/reasoning";
+  if (tab === "phase2") return "/phase2/tools";
+  if (tab === "phase3") return "/phase3/rag";
+  return "/phase4/agent";
 }
 
 async function sendPrompt() {
@@ -251,7 +261,24 @@ async function sendPrompt() {
   const raw =
     typeof json?.response === "string" ? json.response : JSON.stringify(json, null, 2);
 
-  const segments = parseTaggedResponse(raw);
+  let segments = [];
+
+  // Phase 2: use trace[].content to render think/tools/answer boxes per step.
+  if (state.activeTab === "phase2" && Array.isArray(json?.trace)) {
+    for (const step of json.trace) {
+      const content = typeof step?.content === "string" ? step.content : "";
+      if (content.trim().length === 0) continue;
+      const stepSegs = parseTaggedResponse(content);
+      segments.push(...stepSegs);
+    }
+
+    // Fallback if trace is empty or missing tags.
+    if (segments.length === 0) {
+      segments = parseTaggedResponse(raw);
+    }
+  } else {
+    segments = parseTaggedResponse(raw);
+  }
 
   state.chats[state.activeTab].push({
     role: "model",

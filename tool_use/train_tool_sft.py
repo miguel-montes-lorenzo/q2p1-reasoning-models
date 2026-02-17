@@ -98,6 +98,11 @@ def formatting_prompts_func(
     Finally, ensure_response_contains_answer(...) enforces that the last assistant
     response contains an <answer>...</answer> block.
 
+    IMPORTANT:
+      This script now uses the NEW tool-call format:
+        @calculator(expression="..."):ID
+      (and the handler is the single source of truth for validation/execution).
+
     Args:
         example: Dataset example containing at least "question" and "answer".
         tokenizer: HF tokenizer implementing apply_chat_template().
@@ -112,54 +117,63 @@ def formatting_prompts_func(
 
     wrapped_question: str = f"<question>{question}</question>"
 
-    # Step 1: assistant proposes a tool call (no <answer>, so the handler continues).
+    # Step 1: assistant proposes a tool call (typically no <answer>, so the handler continues).
+    #
+    # We pick a deterministic id for the *training* example. This is fine in SFT,
+    # because ids are local to the sample transcript. The global-uniqueness constraint
+    # is enforced at runtime across iterations, not across dataset rows.
     if _is_safe_calculator_expression(expression=final_answer):
         first_assistant: str = (
             "<think>"
             f"{reasoning}\n"
             "I will compute the final numeric value using the calculator tool. "
-            "The result is "
-            f'<tool id=1 name=calculator args={{expression="{final_answer}"}}>'
+            f'The result is @calculator(expression="{final_answer}"):1.'
             "</think>"
         )
     else:
-        # Fallback: no tool call possible; keep a pure reasoning step.
         first_assistant = f"<think>{reasoning}</think>"
 
-    should_continue: bool
-    prompt_appendix: str
-    should_continue, prompt_appendix = parse_and_execute_tool_call(
+    (
+        should_continue,
+        prompt_appendix,
+        _raw_full,
+        _formatted_full,
+        _parsed_answer_only,
+    ) = parse_and_execute_tool_call(
         model_output=first_assistant,
         tool_dict=TOOL_DICT,
         max_calls=int(cfg.max_calls),
+        used_tool_ids=set(),
+        global_outputs={},
     )
 
     # Step 2: assistant produces the final answer (must contain <answer>).
-    second_assistant: str = (
-        f"<think>{reasoning}</think>\n<answer>{final_answer}</answer>"
-    ).strip()
-
-    # If the loop ended (or never started), enforce the <answer> tag.
-    # We apply it to the final assistant text, since that is what gets validated.
-    if not should_continue:
-        second_assistant = ensure_response_contains_answer(full_prompt=second_assistant)
-
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": cfg.system_prompt},
-            {"role": "user", "content": wrapped_question},
-            {"role": "assistant", "content": second_assistant},
-        ]
+    #
+    # If we used the calculator, it's nicer for the model to learn referencing:
+    #   <answer>@1</answer>
+    # Otherwise it can just output the final answer text.
+    if _is_safe_calculator_expression(expression=final_answer):
+        second_assistant: str = f"<think>{reasoning}</think>\n<answer>@1</answer>"
     else:
-        second_assistant = ensure_response_contains_answer(full_prompt=second_assistant)
+        second_assistant = (
+            f"<think>{reasoning}</think>\n<answer>{final_answer}</answer>"
+        )
+    second_assistant = ensure_response_contains_answer(full_prompt=second_assistant)
 
-        messages = [
-            {"role": "system", "content": cfg.system_prompt},
-            {"role": "user", "content": wrapped_question},
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": cfg.system_prompt},
+        {"role": "user", "content": wrapped_question},
+    ]
+
+    if should_continue:
+        messages.extend([
             {"role": "assistant", "content": first_assistant},
-            # This is exactly what must be appended to the previous prompt.
             {"role": "user", "content": prompt_appendix},
             {"role": "assistant", "content": second_assistant},
-        ]
+        ])
+    else:
+        # If no tools were executed / handler did not ask to continue, train a simple 1-turn.
+        messages.append({"role": "assistant", "content": second_assistant})
 
     text: str = tokenizer.apply_chat_template(
         conversation=messages,
@@ -244,7 +258,9 @@ def train() -> None:
     )
 
     formatting_func: Any = partial(
-        formatting_prompts_func, tokenizer=tokenizer, cfg=cfg
+        formatting_prompts_func,
+        tokenizer=tokenizer,
+        cfg=cfg,
     )
 
     trainer: SFTTrainer = SFTTrainer(

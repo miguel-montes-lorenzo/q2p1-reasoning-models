@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import math
 import re
@@ -18,11 +19,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 from tool_use.config import INFERENCE_CONFIG as CONFIG
 from tool_use.config import REPO_DIR
-from tool_use.tool_handler import (
-    ensure_response_contains_answer,
-    insert_tool_desciptions_in_system_propt,
-    parse_and_execute_tool_call,
-)
+from tool_use.tool_handler import insert_tool_desciptions_in_system_propt
+from tool_use.tool_inference import run_tool_use_inference
 from tool_use.tools import TOOL_DICT
 
 
@@ -136,51 +134,6 @@ def _load_adapted_model(
     return cast(torch.nn.Module, adapted)
 
 
-def _render_chat_prompt(*, messages: list[dict[str, str]], tokenizer: Any) -> str:
-    """Render chat prompt with model template."""
-    return tokenizer.apply_chat_template(
-        conversation=messages,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-
-
-def _generate_once(
-    *,
-    messages: list[dict[str, str]],
-    model: torch.nn.Module,
-    tokenizer: Any,
-    cfg: CONFIG,
-) -> str:
-    """Generate completion for the given messages."""
-    full_prompt: str = _render_chat_prompt(messages=messages, tokenizer=tokenizer)
-    enc: Any = tokenizer(full_prompt, return_tensors="pt", truncation=True)
-
-    device: torch.device = next(model.parameters()).device
-    input_ids: torch.Tensor = enc["input_ids"].to(device=device)
-    attention_mask: torch.Tensor = enc["attention_mask"].to(device=device)
-
-    gen_kwargs: dict[str, Any] = {
-        "input_ids": input_ids,
-        "attention_mask": attention_mask,
-        "max_new_tokens": int(cfg.max_new_tokens),
-        "do_sample": bool(cfg.do_sample),
-        "pad_token_id": int(tokenizer.pad_token_id),
-        "eos_token_id": int(tokenizer.eos_token_id),
-    }
-    if cfg.temperature is not None:
-        gen_kwargs["temperature"] = float(cfg.temperature)
-    if cfg.top_p is not None:
-        gen_kwargs["top_p"] = float(cfg.top_p)
-
-    with torch.no_grad():
-        out: torch.Tensor = model.generate(**gen_kwargs)
-
-    prompt_len: int = int(input_ids.shape[1])
-    gen_ids: torch.Tensor = out[0, prompt_len:]
-    return tokenizer.decode(gen_ids, skip_special_tokens=True)
-
-
 def _load_questions(*, questions_path: Path) -> list[QAItem]:
     """Load questions from a JSON file."""
     p: Path = questions_path.expanduser().resolve()
@@ -230,12 +183,7 @@ def _write_answers_json(
     adapter_parsed_answer: list[list[str]],
     adapter_names: list[str],
 ) -> None:
-    """Write outputs to JSON with the required contract.
-
-    Contract:
-      - non-parsed fields: full think-tools-answer (answer may contain raw @i references)
-      - parsed_* fields: ONLY the <answer>...</answer> section with formatted @i
-    """
+    """Write outputs to JSON with the required contract."""
     assert len(items) == len(base_full) == len(base_parsed_answer)
     assert len(adapter_full) == len(adapter_names) == len(adapter_parsed_answer)
     for outs, pars in zip(adapter_full, adapter_parsed_answer, strict=True):
@@ -275,17 +223,12 @@ def _extract_answer_inner_text(*, text: str) -> str | None:
 
 
 def _clean_math_expression(*, text: str) -> str:
-    """Keep only math characters and normalize implicit multiplication."""
-    allowed: set[str] = set("0123456789/.")
-    cleaned: str = "".join([c for c in text if c in allowed]).strip()
-    if not cleaned:
-        return ""
-
-    cleaned = re.sub(pattern=r"(\d)\s*\(", repl=r"\1*(", string=cleaned)
-    cleaned = re.sub(pattern=r"\)\s*(\d)", repl=r")*\1", string=cleaned)
-    cleaned = re.sub(pattern=r"\)\s*\(", repl=r")*(", string=cleaned)
-
-    return cleaned.strip()
+    """Keep only math characters and return an eval-ready expression."""
+    allowed: set[str] = set("0123456789+-*/(). ")
+    normalized: str = text.replace(",", ".")
+    cleaned: str = "".join([c for c in normalized if c in allowed]).strip()
+    cleaned = re.sub(pattern=r"\s+", repl=" ", string=cleaned)
+    return cleaned
 
 
 def _safe_eval_math(*, expr: str) -> float | None:
@@ -428,70 +371,19 @@ def _print_answer_table(
     print(_fmt_row(items=acc_cells))
 
 
-def _run_tool_use_inference(
-    *,
-    question: str,
-    model: torch.nn.Module,
-    tokenizer: Any,
-    cfg: CONFIG,
-) -> tuple[str, str]:
-    """Run tool-loop inference.
-
-    Returns:
-        (full_output_with_unformatted_answer, parsed_answer_only_formatted)
-    """
-    wrapped_question: str = f"<question>{question}</question>"
-    messages: list[dict[str, str]] = [
-        {"role": "system", "content": cfg.system_prompt},
-        {"role": "user", "content": wrapped_question},
-    ]
-
-    used_tool_ids: set[int] = set()
-    global_outputs: dict[int, str] = {}
-
-    last_raw_full: str = ""
-    last_parsed_answer_only: str = "<answer>Error: missing <answer> section</answer>"
-
-    for _ in range(int(cfg.max_calls)):
-        assistant_out: str = _generate_once(
-            messages=messages,
-            model=model,
-            tokenizer=tokenizer,
-            cfg=cfg,
-        )
-
-        (
-            should_continue,
-            prompt_appendix,
-            raw_full,
-            _formatted_full,
-            parsed_answer_only,
-        ) = parse_and_execute_tool_call(
-            model_output=assistant_out,
-            tool_dict=TOOL_DICT,
-            max_calls=int(cfg.max_calls),
-            used_tool_ids=used_tool_ids,
-            global_outputs=global_outputs,
-        )
-
-        last_raw_full = raw_full
-        last_parsed_answer_only = parsed_answer_only
-
-        if not should_continue:
-            last_raw_full = ensure_response_contains_answer(full_prompt=last_raw_full)
-            last_parsed_answer_only = ensure_response_contains_answer(
-                full_prompt=last_parsed_answer_only
-            )
-            return last_raw_full, last_parsed_answer_only
-
-        messages.append({"role": "assistant", "content": assistant_out})
-        messages.append({"role": "user", "content": prompt_appendix})
-
-    last_raw_full = ensure_response_contains_answer(full_prompt=last_raw_full)
-    last_parsed_answer_only = ensure_response_contains_answer(
-        full_prompt=last_parsed_answer_only
-    )
-    return last_raw_full, last_parsed_answer_only
+def _free_model(*, model: torch.nn.Module | None) -> None:
+    """Best-effort GPU/CPU memory cleanup after finishing a model."""
+    if model is not None:
+        try:
+            del model
+        except Exception:
+            pass
+    gc.collect()
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
 
 
 def main(
@@ -501,7 +393,11 @@ def main(
     answers_path: Path,
     eps: float = 1e-3,
 ) -> None:
-    """Compare base model vs adapter models on a tool-use question set."""
+    """Compare base model vs adapter models on a tool-use question set.
+
+    This version evaluates sequentially per model (all questions for base, then
+    all questions for each adapter), and shows one progress bar per model.
+    """
     cfg_base: CONFIG = CONFIG()
 
     descriptions: dict[str, str] = {
@@ -514,67 +410,89 @@ def main(
     cfg: CONFIG = replace(cfg_base, system_prompt=tool_augmented_system_prompt)
 
     tokenizer: Any = _load_tokenizer(cfg=cfg)
-    base_model: torch.nn.Module = _load_base_model(cfg=cfg, tokenizer=tokenizer)
 
+    items: list[QAItem] = _load_questions(questions_path=questions_path)
+    rows: list[int] = list(range(1, len(items) + 1))
+    gold_vals: list[float | None] = [
+        _parse_number_from_text(text=i.answer) for i in items
+    ]
+
+    # Resolve adapter dirs/names now (but load models one-by-one later).
     resolved_dirs: list[Path] = [_resolve_adapter_dir(path=p) for p in adapter_paths]
     raw_names: list[str] = [d.name for d in resolved_dirs]
     adapter_names: list[str] = _make_unique_names(base_names=raw_names)
 
-    adapted_models: list[torch.nn.Module] = [
-        _load_adapted_model(cfg=cfg, tokenizer=tokenizer, adapter_dir=d)
-        for d in resolved_dirs
-    ]
-
-    items: list[QAItem] = _load_questions(questions_path=questions_path)
-
-    rows: list[int] = []
-    gold_vals: list[float | None] = []
-    base_vals: list[float | None] = []
-    adapter_vals: list[list[float | None]] = [[] for _ in adapted_models]
-
+    # Outputs storage
     base_full_outputs: list[str] = []
     base_parsed_answers: list[str] = []
+    base_vals: list[float | None] = []
 
-    adapter_full_outputs: list[list[str]] = [[] for _ in adapted_models]
-    adapter_parsed_answers: list[list[str]] = [[] for _ in adapted_models]
+    adapter_full_outputs: list[list[str]] = [[] for _ in resolved_dirs]
+    adapter_parsed_answers: list[list[str]] = [[] for _ in resolved_dirs]
+    adapter_vals: list[list[float | None]] = [[] for _ in resolved_dirs]
 
-    iterable: Any = tqdm(
-        enumerate(items, start=1),
-        total=len(items),
-        desc="Evaluating tool-use questions",
-        dynamic_ncols=True,
-    )
-
-    for i, item in iterable:
-        rows.append(i)
-
-        gold_val: float | None = _parse_number_from_text(text=item.answer)
-        gold_vals.append(gold_val)
-
-        base_full, base_parsed = _run_tool_use_inference(
-            question=item.question,
-            model=base_model,
-            tokenizer=tokenizer,
-            cfg=cfg,
+    # ---- Evaluate BASE (one progress bar) ----
+    base_model: torch.nn.Module | None = _load_base_model(cfg=cfg, tokenizer=tokenizer)
+    try:
+        pbar_base: Any = tqdm(
+            enumerate(items, start=1),
+            total=len(items),
+            desc="Evaluating model: base",
+            dynamic_ncols=True,
         )
-        base_full_outputs.append(base_full)
-        base_parsed_answers.append(base_parsed)
-        base_vals.append(
-            _extract_validated_numeric_answer(parsed_answer_only=base_parsed)
-        )
-
-        for j, model in enumerate(adapted_models):
-            full_out, parsed_ans = _run_tool_use_inference(
+        for _idx, item in pbar_base:
+            full_out: str
+            parsed_ans: str
+            _steps: list[str]
+            full_out, parsed_ans, _steps = run_tool_use_inference(
                 question=item.question,
-                model=model,
+                model=cast(torch.nn.Module, base_model),
                 tokenizer=tokenizer,
                 cfg=cfg,
+                tool_dict=TOOL_DICT,
             )
-            adapter_full_outputs[j].append(full_out)
-            adapter_parsed_answers[j].append(parsed_ans)
-            adapter_vals[j].append(
+            base_full_outputs.append(full_out)
+            base_parsed_answers.append(parsed_ans)
+            base_vals.append(
                 _extract_validated_numeric_answer(parsed_answer_only=parsed_ans)
             )
+    finally:
+        _free_model(model=base_model)
+        base_model = None
+
+    # ---- Evaluate ADAPTERS sequentially (one progress bar per adapter) ----
+    for j, (adapter_dir, adapter_name) in enumerate(
+        zip(resolved_dirs, adapter_names, strict=True)
+    ):
+        adapted_model: torch.nn.Module | None = _load_adapted_model(
+            cfg=cfg, tokenizer=tokenizer, adapter_dir=adapter_dir
+        )
+        try:
+            pbar_ad: Any = tqdm(
+                enumerate(items, start=1),
+                total=len(items),
+                desc=f"Evaluating model: {adapter_name}",
+                dynamic_ncols=True,
+            )
+            for _idx, item in pbar_ad:
+                full_out_j: str
+                parsed_ans_j: str
+                _steps_j: list[str]
+                full_out_j, parsed_ans_j, _steps_j = run_tool_use_inference(
+                    question=item.question,
+                    model=cast(torch.nn.Module, adapted_model),
+                    tokenizer=tokenizer,
+                    cfg=cfg,
+                    tool_dict=TOOL_DICT,
+                )
+                adapter_full_outputs[j].append(full_out_j)
+                adapter_parsed_answers[j].append(parsed_ans_j)
+                adapter_vals[j].append(
+                    _extract_validated_numeric_answer(parsed_answer_only=parsed_ans_j)
+                )
+        finally:
+            _free_model(model=adapted_model)
+            adapted_model = None
 
     _write_answers_json(
         answers_path=answers_path,

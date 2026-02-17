@@ -8,7 +8,7 @@ from huggingface_hub import snapshot_download
 from huggingface_hub.utils import HfHubHTTPError, LocalEntryNotFoundError
 from rlm.config import INFERENCE_CONFIG as CONFIG
 from rlm.config import REPO_DIR
-from utils import check_cwd
+from utils.paths import check_cwd
 
 
 @dataclass(frozen=True, slots=True)
