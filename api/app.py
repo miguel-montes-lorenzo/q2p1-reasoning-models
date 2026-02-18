@@ -3,23 +3,24 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import torch
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from rlm.config import INFERENCE_CONFIG as NORMAL_INFERENCE_CONFIG
-from tool_use.langchain.config import INFERENCE_CONFIG as TOOL_INFERENCE_CONFIG
-from tool_use.langchain.tool_handler import (
+from tool_use.config import INFERENCE_CONFIG as TOOL_INFERENCE_CONFIG
+from tool_use.tool_handler import (
+    ensure_response_contains_answer,
     insert_tool_desciptions_in_system_propt,
 )
-from tool_use.langchain.tool_inference import run_tool_use_inference
-from tool_use.langchain.tools import TOOL_DICT, get_langchain_tools
+from tool_use.tools import TOOL_DICT
 
 # Add repo root to path so we can import phase modules
 sys.path.append(os.path.dirname(os.path.dirname(p=os.path.abspath(path=__file__))))
@@ -116,15 +117,14 @@ async def phase2_endpoint(request: QueryRequest) -> dict[str, Any]:
             "details": {"status": "todo"},
         }
 
-    full_output: str
-    parsed_answer_only: str
-    step_contents: list[str]
-    full_output, parsed_answer_only, step_contents = run_tool_use_inference(
-        question=request.prompt,
-        model=MODEL,
-        tokenizer=TOKENIZER,
-        cfg=TOOL_CFG,
-        tools=TOOLS,
+    cfg: Any = TOOL_INFERENCE_CONFIG()
+
+    descriptions: dict[str, str] = {
+        tool_name: str(tool_meta["description"])
+        for tool_name, tool_meta in TOOL_DICT.items()
+    }
+    system_prompt_with_tools: str = insert_tool_desciptions_in_system_propt(
+        descriptions=descriptions
     )
 
     trace: list[dict[str, Any]] = [
@@ -176,6 +176,33 @@ async def phase4_endpoint(request: QueryRequest) -> dict[str, Any]:
     }  # TODO remove
 
     return result
+
+
+# --- Web UI served by FastAPI ---
+
+# WEB_PUBLIC_DIR = Path(os.environ.get("WEB_PUBLIC_DIR", default="/home/root/web/public"))
+# INDEX_HTML: Path = WEB_PUBLIC_DIR / "index.html"
+
+
+# # Sirve estáticos en /static (NO en /)
+# app.mount(
+#     path="/static",
+#     app=StaticFiles(directory=str(WEB_PUBLIC_DIR), html=False),
+#     name="static",
+# )
+
+
+# @app.get("/")
+# async def web_index() -> FileResponse:
+#     return FileResponse(path=str(INDEX_HTML))
+
+
+# # IMPORTANTE: montar estáticos al final para no “pisar” /phase* ni /api/*
+# app.mount(
+#     path="/",
+#     app=StaticFiles(directory=str(WEB_PUBLIC_DIR), html=True),
+#     name="web",
+# )
 
 
 # --- Web UI served by FastAPI ---
