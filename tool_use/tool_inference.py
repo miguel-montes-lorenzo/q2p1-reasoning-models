@@ -140,7 +140,8 @@ def run_tool_use_inference(
     transcript_raw: list[str] = []
     last_parsed_answer_only: str = "<answer>null</answer>"
 
-    for _ in range(int(cfg.max_calls)):
+    max_calls: int = int(cfg.max_calls)
+    for it in range(max_calls):
         assistant_out: str = _generate_once(
             messages=messages,
             model=model,
@@ -157,9 +158,10 @@ def run_tool_use_inference(
         ) = parse_and_execute_tool_call(
             model_output=assistant_out,
             tool_dict=tool_dict,
-            max_calls=int(cfg.max_calls),
+            max_calls=max_calls,
             used_tool_ids=used_tool_ids,
             global_outputs=global_outputs,
+            is_last_iteration=(it == (max_calls - 1)),
         )
 
         transcript_raw.append(raw_full)
