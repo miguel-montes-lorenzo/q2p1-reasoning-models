@@ -16,34 +16,9 @@ from utils.paths import check_cwd
 
 from tool_use.langchain.config import REPO_DIR
 from tool_use.langchain.config import SFT_CONFIG as CONFIG
-from tool_use.langchain.tool_handler import (
-    ensure_response_contains_answer,
-    insert_tool_desciptions_in_system_propt,
-    parse_and_execute_tool_call,
-)
-from tool_use.langchain.tools import TOOL_DICT
-
-
-def _parse_gsm8k_answer(*, answer_field: str) -> tuple[str, str]:
-    """Parse GSM8K 'answer' field into (reasoning, final_answer).
-
-    GSM8K commonly stores the rationale plus a final answer after a '####' marker.
-
-    Args:
-        answer_field: Raw GSM8K answer string.
-
-    Returns:
-        A tuple (reasoning, final_answer). If parsing fails, final_answer is "".
-    """
-    if "####" in answer_field:
-        parts: list[str] = answer_field.split("####", maxsplit=1)
-        reasoning: str = parts[0].strip()
-        final_answer: str = parts[1].strip()
-        return (reasoning, final_answer)
-
-    reasoning_fallback: str = answer_field.strip()
-    final_fallback: str = ""
-    return (reasoning_fallback, final_fallback)
+from tool_use.langchain.tool_handler import insert_tool_desciptions_in_system_propt
+from tool_use.langchain.tool_inference import run_tool_use_inference
+from tool_use.langchain.tools import TOOL_DICT, get_langchain_tools
 
 
 def _build_bnb_config(*, use_4bit: bool) -> BitsAndBytesConfig | None:
@@ -66,125 +41,61 @@ def _build_bnb_config(*, use_4bit: bool) -> BitsAndBytesConfig | None:
     )
 
 
-def _is_safe_calculator_expression(*, expression: str) -> bool:
-    """Check whether an expression is safe for the calculator tool.
-
-    Args:
-        expression: Candidate expression string.
-
-    Returns:
-        True if expression uses only allowed characters, else False.
-    """
-    allowed: set[str] = set("0123456789+-*/(). ")
-    return set(expression).issubset(allowed) and len(expression.strip()) > 0
-
-
-def formatting_prompts_func(
+def _build_sft_text_from_tool_loop(
     example: dict[str, Any],
     *,
+    model: torch.nn.Module,
     tokenizer: Any,
     cfg: CONFIG,
-) -> str:
-    """Format GSM8K examples into a tool-use chat-template supervised sample.
+    tools: list[Any],
+) -> dict[str, str]:
+    """Build a single SFT training sample by running the tool-use loop.
 
-    This creates a 2-step interaction that demonstrates tool usage:
-      system -> user -> assistant(tool call) -> user(tool evaluation) -> assistant(answer)
-
-    The tool evaluation step is produced by:
-      parse_and_execute_tool_call(...), which returns exactly what must be appended
-      to the previous prompt to create the next prompt (<think>...</think> and
-      <tools>...</tools>).
-
-    Finally, ensure_response_contains_answer(...) enforces that the last assistant
-    response contains an <answer>...</answer> block.
-
-    IMPORTANT:
-      This script now uses the NEW tool-call format:
-        @calculator(expression="..."):ID
-      (and the handler is the single source of truth for validation/execution).
+    This uses `run_tool_use_inference(...)` to generate a complete transcript
+    containing <think>/<tools>/<answer> blocks, then wraps it into the tokenizer
+    chat template as a single assistant message.
 
     Args:
-        example: Dataset example containing at least "question" and "answer".
-        tokenizer: HF tokenizer implementing apply_chat_template().
-        cfg: Shared SFT configuration (includes system prompt and max_calls).
+        example: Dataset example containing at least "question".
+        model: HF causal LM.
+        tokenizer: HF tokenizer with apply_chat_template.
+        cfg: Tool-use config containing system_prompt and generation settings.
+        tools: LangChain tools list.
 
     Returns:
-        A single training string.
+        Mapping with a "text" field for SFTTrainer.
     """
     question: str = str(example["question"])
-    answer_field: str = str(example["answer"])
-    reasoning, final_answer = _parse_gsm8k_answer(answer_field=answer_field)
-
     wrapped_question: str = f"<question>{question}</question>"
 
-    # Step 1: assistant proposes a tool call (typically no <answer>, so the handler continues).
-    #
-    # We pick a deterministic id for the *training* example. This is fine in SFT,
-    # because ids are local to the sample transcript. The global-uniqueness constraint
-    # is enforced at runtime across iterations, not across dataset rows.
-    if _is_safe_calculator_expression(expression=final_answer):
-        first_assistant: str = (
-            "<think>"
-            f"{reasoning}\n"
-            "I will compute the final numeric value using the calculator tool. "
-            f'The result is @calculator(expression="{final_answer}"):1.'
-            "</think>"
-        )
-    else:
-        first_assistant = f"<think>{reasoning}</think>"
-
-    (
-        should_continue,
-        prompt_appendix,
-        _raw_full,
-        _formatted_full,
-        _parsed_answer_only,
-    ) = parse_and_execute_tool_call(
-        model_output=first_assistant,
-        tool_dict=TOOL_DICT,
-        max_calls=int(cfg.max_calls),
-        used_tool_ids=set(),
-        global_outputs={},
+    full_output: str
+    _parsed_answer_only: str
+    _step_contents: list[str]
+    full_output, _parsed_answer_only, _step_contents = run_tool_use_inference(
+        question=question,
+        model=model,
+        tokenizer=tokenizer,
+        cfg=cfg,
+        tools=tools,
+        formatted_references=True,
     )
 
-    # Step 2: assistant produces the final answer (must contain <answer>).
-    #
-    # If we used the calculator, it's nicer for the model to learn referencing:
-    #   <answer>@1</answer>
-    # Otherwise it can just output the final answer text.
-    if _is_safe_calculator_expression(expression=final_answer):
-        second_assistant: str = f"<think>{reasoning}</think>\n<answer>@1</answer>"
-    else:
-        second_assistant = (
-            f"<think>{reasoning}</think>\n<answer>{final_answer}</answer>"
-        )
-    second_assistant = ensure_response_contains_answer(full_prompt=second_assistant)
-
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": cfg.system_prompt},
+        {"role": "system", "content": str(cfg.system_prompt)},
         {"role": "user", "content": wrapped_question},
+        {"role": "assistant", "content": full_output},
     ]
-
-    if should_continue:
-        messages.extend([
-            {"role": "assistant", "content": first_assistant},
-            {"role": "user", "content": prompt_appendix},
-            {"role": "assistant", "content": second_assistant},
-        ])
-    else:
-        # If no tools were executed / handler did not ask to continue, train a simple 1-turn.
-        messages.append({"role": "assistant", "content": second_assistant})
 
     text: str = tokenizer.apply_chat_template(
         conversation=messages,
         tokenize=False,
         add_generation_prompt=False,
     )
-    return text
+    return {"text": text}
 
 
 def train() -> None:
-    """Run LoRA SFT on GSM8K with tool-use prompt + calculator description."""
+    """Run LoRA SFT on GSM8K using tool-loop generated transcripts."""
     cfg_base: CONFIG = CONFIG()
 
     descriptions: dict[str, str] = {
@@ -217,6 +128,8 @@ def train() -> None:
     model.generation_config.pad_token_id = tokenizer.pad_token_id
     model.generation_config.eos_token_id = tokenizer.eos_token_id
 
+    tools: list[Any] = get_langchain_tools()
+
     peft_config: LoraConfig = LoraConfig(
         r=16,
         lora_alpha=32,
@@ -236,6 +149,24 @@ def train() -> None:
 
     raw: Any = load_dataset(path=cfg.dataset_name, name=cfg.dataset_config)
     dataset: Dataset = raw["train"]
+
+    build_text_fn: Any = partial(
+        _build_sft_text_from_tool_loop,
+        model=model,
+        tokenizer=tokenizer,
+        cfg=cfg,
+        tools=tools,
+    )
+
+    # NOTE:
+    # - We keep num_proc=1 because HF models aren't pickle-friendly for multiprocessing.
+    # - This preprocessing will be expensive if you run it over the full GSM8K train split.
+    dataset_with_text: Dataset = dataset.map(
+        function=build_text_fn,
+        remove_columns=list(dataset.column_names),
+        num_proc=1,
+        desc="Generating tool-loop transcripts",
+    )
 
     sft_args: SFTConfig = SFTConfig(
         output_dir=str(cfg.checkpoint_directory),
@@ -257,19 +188,13 @@ def train() -> None:
         packing=False,
     )
 
-    formatting_func: Any = partial(
-        formatting_prompts_func,
-        tokenizer=tokenizer,
-        cfg=cfg,
-    )
-
     trainer: SFTTrainer = SFTTrainer(
         model=model,
-        train_dataset=dataset,
+        train_dataset=dataset_with_text,
         peft_config=peft_config,
         processing_class=tokenizer,
         args=sft_args,
-        formatting_func=formatting_func,
+        dataset_text_field="text",
     )
 
     trainer.train()

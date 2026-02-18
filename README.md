@@ -73,9 +73,9 @@ Instalar dependencias de python
 uv sync
 ```
 
-Descargar modelo preentrenado + crear un checkpoint de sft:
+Descargar modelo preentrenado:
 ```bash
-python -m rlm.train_sft
+python -m api.cache_model_assets
 ```
 
 Levantar la api de ngrok:
@@ -98,3 +98,151 @@ curl -X POST "https://unrefractory-ella-overbulky.ngrok-free.dev/phase1/reasonin
 Acceder a la UI web:
 - Copiar la URL de ./api/ngrok-url
 - Pegarla en el navegador
+
+
+
+
+Here is a clean README section you can paste directly.
+
+---
+
+## Repository Structure Overview
+
+This repository implements a multi-stage reasoning system built around **Reasoning Language Models (RLM)**, **tool-use augmentation**, and an **API interface** for evaluation and interaction.
+Below is a concise description of the most relevant modules and files.
+
+---
+
+### `rlm/` — Reasoning Language Model pipeline
+
+Core training and inference logic for the base reasoning model without external tools.
+
+**Key files**
+
+* `config.py`
+  Central configuration for training and inference (model name, decoding params, paths, LoRA settings, etc.).
+
+* `train_sft.py`
+  Supervised fine-tuning (SFT) on GSM8K-style reasoning traces.
+
+* `train_grpo.py`
+  GRPO reinforcement-style optimization stage that improves reasoning quality after SFT.
+
+* `inference.py`
+  Loads the trained LoRA adapter and generates reasoning traces for a prompt.
+
+* `check_answers.py`
+  Evaluation script comparing model outputs against QA benchmarks.
+
+**Purpose**
+
+This module provides the **baseline reasoning capability** used later by tool-use and API layers.
+
+---
+
+### `tool_use/` — Tool-augmented reasoning
+
+Implements structured tool calling, execution, and training of models that can reason **with external tools**.
+
+There are two implementations:
+
+* `tool_use/langchain/` → production implementation using **LangChain tools**
+* `tool_use/custom/` → reference / minimal custom implementation
+
+#### Core concepts
+
+* Structured reasoning format using:
+
+  * `<think>` internal reasoning
+  * `<tools>` execution trace
+  * `<answer>` final validated output
+* Deterministic **tool execution loop**
+* Support for **multi-step reasoning with tool dependencies**
+
+#### Important files (LangChain version)
+
+* `config.py`
+  Tool-use system prompt, decoding settings, and inference configuration.
+
+* `tools.py`
+  Registry of available tools (e.g., calculator) and their metadata.
+
+* `tool_handler.py`
+  **Critical component** that:
+
+  * Parses model outputs
+  * Validates tool calls and IDs
+  * Executes tools
+  * Formats `<tools>` blocks
+  * Produces the final `<answer>`
+
+* `tool_inference.py`
+  Implements the **tool-execution loop** via:
+
+  * HuggingFace chat wrapper
+  * Iterative reasoning + tool execution
+  * Final answer validation
+
+* `train_tool_sft.py`
+  Generates **tool-use transcripts** and performs LoRA SFT so the model learns to:
+
+  * call tools correctly
+  * reference tool outputs
+  * produce validated answers
+
+* `check_tool_answers.py`
+  Benchmark evaluation for tool-augmented reasoning.
+
+**Purpose**
+
+This module upgrades the base RLM into a **reasoning agent capable of external computation and structured multi-step reasoning**.
+
+---
+
+### `api/app.py` — Unified inference API
+
+FastAPI service exposing the different reasoning stages.
+
+**Endpoints**
+
+* `/phase1/reasoning`
+  Base RLM reasoning without tools.
+
+* `/phase2/tools`
+  Tool-augmented reasoning using the full **tool-execution loop**.
+
+* `/phase3/rag`
+  Placeholder for retrieval-augmented generation.
+
+* `/phase4/agent`
+  Placeholder for ReAct-style agent orchestration.
+
+**Startup behavior**
+
+* Loads the RLM model and tokenizer once.
+* Injects **tool descriptions into the system prompt**.
+* Initializes LangChain tools.
+* Serves both:
+
+  * JSON API
+  * Static web UI (`web/`).
+
+**Role in architecture**
+
+This file is the **runtime entry point** that connects:
+
+```
+RLM  →  Tool Use  →  API  →  Web UI
+```
+
+---
+
+### Supporting directories (brief)
+
+* `QA/` — Benchmark questions and expected answers.
+* `rag/` — Retrieval pipeline and vector store utilities.
+* `utils/` — Shared helpers (paths, LangChain utilities).
+* `web/` — Minimal frontend for interactive testing.
+* `weights/` — Stored LoRA checkpoints for RLM and tool-use models.
+
+---
