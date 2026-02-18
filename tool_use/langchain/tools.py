@@ -1,4 +1,4 @@
-# tool_use/tools.py
+# tool_use/langchain/tools.py
 
 from __future__ import annotations
 
@@ -28,6 +28,11 @@ def calculator(*, expression: str) -> str:
         - Parentheses for grouping (e.g., `(2 + 3) * 4`)
         - Chained arithmetic operations
         - Exponentiation using Python syntax `**` (e.g., `45234**(1/2)`)
+
+    WHEN TO USE (**VERY IMPORTANT!!!**):
+        - Assume that you **cannot do any trivial math operation without this tool**.
+          Not even 1+1 or 1*1, and of course nothing harder either.
+        - Use this tool for **all scalar mathematical operations**.
 
     Args:
         expression: Arithmetic expression string composed only of allowed

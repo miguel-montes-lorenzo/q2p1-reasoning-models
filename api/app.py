@@ -137,6 +137,7 @@ async def phase2_endpoint(request: QueryRequest) -> dict[str, Any]:
         tokenizer=TOKENIZER,
         cfg=TOOL_CFG,
         tools=TOOLS,
+        formatted_references=True,
     )
 
     trace: list[dict[str, Any]] = [

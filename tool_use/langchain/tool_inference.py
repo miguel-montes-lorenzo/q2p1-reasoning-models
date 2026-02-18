@@ -193,6 +193,7 @@ def run_tool_use_inference(
     tokenizer: Any,
     cfg: Any,
     tools: list[BaseTool],
+    formatted_references: bool = False,
 ) -> tuple[str, str, list[str]]:
     """Run tool-loop inference for a single question using LangChain tools.
 
@@ -209,10 +210,13 @@ def run_tool_use_inference(
         cfg: Tool-use inference config (must include system_prompt, max_calls,
             and generation fields like max_new_tokens/do_sample[/temperature/top_p]).
         tools: LangChain tool list.
+        formatted_references: If True, the returned full transcript contains
+            formatted <answer> blocks with @ID references replaced by tool outputs.
+            If False, returns the raw transcript (may include unresolved @ID).
 
     Returns:
         Tuple:
-          - full_output_transcript: Concatenated raw outputs for all iterations.
+          - full_output_transcript: Concatenated raw/pretty outputs for all iterations.
           - parsed_answer_only_final: Final validated <answer>...</answer>.
           - step_contents: Split contents from each <think> to next <think> or end.
     """
@@ -228,7 +232,7 @@ def run_tool_use_inference(
     used_tool_ids: set[str] = set()
     global_outputs: dict[str, str] = {}
 
-    transcript_raw: list[str] = []
+    transcript: list[str] = []
     last_parsed_answer_only: str = "<answer>null</answer>"
 
     max_calls: int = int(cfg.max_calls)
@@ -239,7 +243,7 @@ def run_tool_use_inference(
             should_continue,
             prompt_appendix,
             raw_full,
-            _formatted_full,
+            formatted_full,
             parsed_answer_only,
         ) = parse_and_execute_tool_call(
             model_output=assistant_out,
@@ -250,25 +254,25 @@ def run_tool_use_inference(
             is_last_iteration=(it == (max_calls - 1)),
         )
 
-        transcript_raw.append(raw_full)
+        transcript.append(formatted_full if formatted_references else raw_full)
         last_parsed_answer_only = parsed_answer_only
 
         if not should_continue:
-            full_raw: str = "\n".join(transcript_raw)
-            full_raw = ensure_response_contains_answer(full_prompt=full_raw)
+            full_out: str = "\n".join(transcript)
+            full_out = ensure_response_contains_answer(full_prompt=full_out)
             last_parsed_answer_only = ensure_response_contains_answer(
                 full_prompt=last_parsed_answer_only
             )
-            step_contents: list[str] = _split_into_think_steps(text=full_raw)
-            return full_raw, last_parsed_answer_only, step_contents
+            step_contents: list[str] = _split_into_think_steps(text=full_out)
+            return full_out, last_parsed_answer_only, step_contents
 
         messages.append(AIMessage(content=assistant_out))
         messages.append(HumanMessage(content=prompt_appendix))
 
-    full_raw2: str = "\n".join(transcript_raw)
-    full_raw2 = ensure_response_contains_answer(full_prompt=full_raw2)
+    full_out2: str = "\n".join(transcript)
+    full_out2 = ensure_response_contains_answer(full_prompt=full_out2)
     last_parsed_answer_only = ensure_response_contains_answer(
         full_prompt=last_parsed_answer_only
     )
-    step_contents2: list[str] = _split_into_think_steps(text=full_raw2)
-    return full_raw2, last_parsed_answer_only, step_contents2
+    step_contents2: list[str] = _split_into_think_steps(text=full_out2)
+    return full_out2, last_parsed_answer_only, step_contents2
