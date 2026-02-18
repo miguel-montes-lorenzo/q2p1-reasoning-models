@@ -14,12 +14,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from rlm.config import INFERENCE_CONFIG as NORMAL_INFERENCE_CONFIG
-from tool_use.config import INFERENCE_CONFIG as TOOL_INFERENCE_CONFIG
-from tool_use.tool_handler import (
+from tool_use.langchain.config import INFERENCE_CONFIG as TOOL_INFERENCE_CONFIG
+from tool_use.langchain.tool_handler import (
     insert_tool_desciptions_in_system_propt,
 )
-from tool_use.tool_inference import run_tool_use_inference
-from tool_use.tools import TOOL_DICT
+from tool_use.langchain.tool_inference import run_tool_use_inference
+from tool_use.langchain.tools import TOOL_DICT, get_langchain_tools
 
 # Add repo root to path so we can import phase modules
 sys.path.append(os.path.dirname(os.path.dirname(p=os.path.abspath(path=__file__))))
@@ -44,13 +44,14 @@ PORT: int = 8182
 MODEL: Any | None = None
 TOKENIZER: Any | None = None
 TOOL_CFG: Any | None = None
+TOOLS: list[Any] | None = None
 AGENT = None
 
 
 @app.on_event("startup")
 async def startup_event() -> None:
     """Load models once at startup to avoid reloading per request."""
-    global MODEL, TOKENIZER, TOOL_CFG
+    global MODEL, TOKENIZER, TOOL_CFG, TOOLS
 
     print("Inicializando API...")
     MODEL, TOKENIZER = load_rlm_model()
@@ -65,6 +66,8 @@ async def startup_event() -> None:
     TOOL_CFG = replace(
         TOOL_INFERENCE_CONFIG(), system_prompt=tool_augmented_system_prompt
     )
+
+    TOOLS = get_langchain_tools()
 
     print("Modelos cargados (RLM).")
     print("Tool-use config listo (prompt con descripciones).")
@@ -107,7 +110,7 @@ async def phase1_endpoint(request: QueryRequest) -> dict[str, Any]:
 @app.post(path="/phase2/tools", response_model=GenericResponse, tags=["Fase 2"])
 async def phase2_endpoint(request: QueryRequest) -> dict[str, Any]:
     """Evalúa tool-use usando el tool loop + tool_handler."""
-    if MODEL is None or TOKENIZER is None or TOOL_CFG is None:
+    if MODEL is None or TOKENIZER is None or TOOL_CFG is None or TOOLS is None:
         return {
             "response": "ERROR: Modelo/Tokenizer/Tool cfg de Fase 2 no cargado.",
             "details": {"status": "todo"},
@@ -121,7 +124,7 @@ async def phase2_endpoint(request: QueryRequest) -> dict[str, Any]:
         model=MODEL,
         tokenizer=TOKENIZER,
         cfg=TOOL_CFG,
-        tool_dict=TOOL_DICT,
+        tools=TOOLS,
     )
 
     trace: list[dict[str, Any]] = [

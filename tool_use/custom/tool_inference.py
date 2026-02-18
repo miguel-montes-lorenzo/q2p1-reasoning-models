@@ -6,8 +6,7 @@ import re
 from typing import Any
 
 import torch
-
-from tool_use.tool_handler import (
+from tool_use.custom.tool_handler import (
     ensure_response_contains_answer,
     parse_and_execute_tool_call,
 )

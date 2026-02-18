@@ -14,14 +14,13 @@ from typing import Any, cast
 
 import torch
 from peft import PeftModel
+from tool_use.custom.config import INFERENCE_CONFIG as CONFIG
+from tool_use.custom.config import REPO_DIR
+from tool_use.custom.tool_handler import insert_tool_desciptions_in_system_propt
+from tool_use.custom.tool_inference import run_tool_use_inference
+from tool_use.custom.tools import TOOL_DICT
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
-from tool_use.config import INFERENCE_CONFIG as CONFIG
-from tool_use.config import REPO_DIR
-from tool_use.tool_handler import insert_tool_desciptions_in_system_propt
-from tool_use.tool_inference import run_tool_use_inference
-from tool_use.tools import TOOL_DICT
 
 
 @dataclass(frozen=True)

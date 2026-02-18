@@ -10,8 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from rlm.config import SYSTEM_PROMPT, SYSTEM_PROMPT_END
-
-from tool_use.config import TOOL_SYSTEM_PROMPT
+from tool_use.custom.config import TOOL_SYSTEM_PROMPT
 
 _ALLOWED_PARENT_TAGS: tuple[str, ...] = ("question", "think", "tools", "answer")
 

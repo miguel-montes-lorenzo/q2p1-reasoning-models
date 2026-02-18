@@ -10,18 +10,17 @@ from typing import Any
 import torch
 from datasets import Dataset, load_dataset
 from peft import LoraConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from trl import SFTConfig, SFTTrainer
-from utils.paths import check_cwd
-
-from tool_use.config import REPO_DIR
-from tool_use.config import SFT_CONFIG as CONFIG
-from tool_use.tool_handler import (
+from tool_use.langchain.config import REPO_DIR
+from tool_use.langchain.config import SFT_CONFIG as CONFIG
+from tool_use.langchain.tool_handler import (
     ensure_response_contains_answer,
     insert_tool_desciptions_in_system_propt,
     parse_and_execute_tool_call,
 )
-from tool_use.tools import TOOL_DICT
+from tool_use.langchain.tools import TOOL_DICT
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from trl import SFTConfig, SFTTrainer
+from utils.paths import check_cwd
 
 
 def _parse_gsm8k_answer(*, answer_field: str) -> tuple[str, str]:
