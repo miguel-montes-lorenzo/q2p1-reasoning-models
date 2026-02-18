@@ -1,15 +1,15 @@
-# tool_use/langchain/train_sft.py
+# tool_use/langchain/train_tool_sft.py
 
 from __future__ import annotations
 
 import os
 from dataclasses import replace
-from functools import partial
 from typing import Any
 
 import torch
 from datasets import Dataset, load_dataset
 from peft import LoraConfig
+from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import SFTConfig, SFTTrainer
 from utils.paths import check_cwd
@@ -41,29 +41,28 @@ def _build_bnb_config(*, use_4bit: bool) -> BitsAndBytesConfig | None:
     )
 
 
-def _build_sft_text_from_tool_loop(
+def _example_to_sft_text(
     example: dict[str, Any],
     *,
     model: torch.nn.Module,
     tokenizer: Any,
-    cfg: CONFIG,
+    cfg: Any,
     tools: list[Any],
-) -> dict[str, str]:
-    """Build a single SFT training sample by running the tool-use loop.
+) -> str:
+    """Generate a single SFT training string for one GSM8K example.
 
-    This uses `run_tool_use_inference(...)` to generate a complete transcript
-    containing <think>/<tools>/<answer> blocks, then wraps it into the tokenizer
-    chat template as a single assistant message.
+    This runs the tool-use loop in-process (GPU-safe) and wraps the resulting
+    transcript as the assistant turn.
 
     Args:
-        example: Dataset example containing at least "question".
+        example: Dataset row with "question".
         model: HF causal LM.
-        tokenizer: HF tokenizer with apply_chat_template.
-        cfg: Tool-use config containing system_prompt and generation settings.
-        tools: LangChain tools list.
+        tokenizer: HF tokenizer.
+        cfg: Tool-use inference config.
+        tools: LangChain tools.
 
     Returns:
-        Mapping with a "text" field for SFTTrainer.
+        Rendered chat-template training text.
     """
     question: str = str(example["question"])
     wrapped_question: str = f"<question>{question}</question>"
@@ -86,12 +85,13 @@ def _build_sft_text_from_tool_loop(
         {"role": "assistant", "content": full_output},
     ]
 
-    text: str = tokenizer.apply_chat_template(
-        conversation=messages,
-        tokenize=False,
-        add_generation_prompt=False,
+    return str(
+        tokenizer.apply_chat_template(
+            conversation=messages,
+            tokenize=False,
+            add_generation_prompt=False,
+        )
     )
-    return {"text": text}
 
 
 def train() -> None:
@@ -108,6 +108,7 @@ def train() -> None:
     cfg: CONFIG = replace(cfg_base, system_prompt=tool_augmented_system_prompt)
 
     os.environ["ACCELERATE_MIXED_PRECISION"] = "bf16"
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
     tokenizer: Any = AutoTokenizer.from_pretrained(
         pretrained_model_name_or_path=cfg.model_name,
@@ -150,23 +151,21 @@ def train() -> None:
     raw: Any = load_dataset(path=cfg.dataset_name, name=cfg.dataset_config)
     dataset: Dataset = raw["train"]
 
-    build_text_fn: Any = partial(
-        _build_sft_text_from_tool_loop,
-        model=model,
-        tokenizer=tokenizer,
-        cfg=cfg,
-        tools=tools,
-    )
+    # Build texts sequentially to avoid CUDA-in-fork issues.
+    texts: list[str] = []
+    for ex in tqdm(
+        dataset, total=len(dataset), desc="Generating tool-loop transcripts"
+    ):
+        text: str = _example_to_sft_text(
+            ex,
+            model=model,
+            tokenizer=tokenizer,
+            cfg=cfg,
+            tools=tools,
+        )
+        texts.append(text)
 
-    # NOTE:
-    # - We keep num_proc=1 because HF models aren't pickle-friendly for multiprocessing.
-    # - This preprocessing will be expensive if you run it over the full GSM8K train split.
-    dataset_with_text: Dataset = dataset.map(
-        function=build_text_fn,
-        remove_columns=list(dataset.column_names),
-        num_proc=1,
-        desc="Generating tool-loop transcripts",
-    )
+    dataset_with_text: Dataset = Dataset.from_dict({"text": texts})
 
     sft_args: SFTConfig = SFTConfig(
         output_dir=str(cfg.checkpoint_directory),
