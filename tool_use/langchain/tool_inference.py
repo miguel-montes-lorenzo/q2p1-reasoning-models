@@ -1,4 +1,4 @@
-# tool_use/tool_inference.py
+# tool_use/langchain/tool_inference.py
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any
 import torch
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
+
 from tool_use.langchain.tool_handler import (
     ensure_response_contains_answer,
     parse_and_execute_tool_call,
@@ -30,6 +31,48 @@ class HFGenerationConfig:
     do_sample: bool
     temperature: float | None = None
     top_p: float | None = None
+
+
+def _get_gen_cfg(*, cfg: Any) -> HFGenerationConfig:
+    """Derive a HFGenerationConfig from an inference config object.
+
+    Supports both:
+      - cfg.gen_cfg (already a HFGenerationConfig-like object)
+      - "flat" cfg fields: max_new_tokens, do_sample, temperature, top_p
+
+    Args:
+        cfg: Inference config object.
+
+    Returns:
+        HFGenerationConfig built from cfg.
+    """
+    gen_cfg_any: Any = getattr(cfg, "gen_cfg", None)
+    if gen_cfg_any is not None:
+        return HFGenerationConfig(
+            max_new_tokens=int(gen_cfg_any.max_new_tokens),
+            do_sample=bool(gen_cfg_any.do_sample),
+            temperature=(
+                float(gen_cfg_any.temperature)
+                if getattr(gen_cfg_any, "temperature", None) is not None
+                else None
+            ),
+            top_p=(
+                float(gen_cfg_any.top_p)
+                if getattr(gen_cfg_any, "top_p", None) is not None
+                else None
+            ),
+        )
+
+    return HFGenerationConfig(
+        max_new_tokens=int(cfg.max_new_tokens),
+        do_sample=bool(cfg.do_sample),
+        temperature=(
+            float(cfg.temperature)
+            if getattr(cfg, "temperature", None) is not None
+            else None
+        ),
+        top_p=(float(cfg.top_p) if getattr(cfg, "top_p", None) is not None else None),
+    )
 
 
 class HFChatModel:
@@ -143,27 +186,12 @@ def _split_into_think_steps(*, text: str) -> list[str]:
     return chunks
 
 
-@dataclass(frozen=True)
-class ToolUseInferenceConfig:
-    """Config for the tool-use loop (LangChain-centered execution).
-
-    Attributes:
-        system_prompt: System prompt (already includes tool rules + tool descs).
-        max_calls: Maximum number of tool-loop iterations.
-        gen_cfg: HF generation configuration for the underlying model.
-    """
-
-    system_prompt: str
-    max_calls: int
-    gen_cfg: HFGenerationConfig
-
-
 def run_tool_use_inference(
     *,
     question: str,
     model: torch.nn.Module,
     tokenizer: Any,
-    cfg: ToolUseInferenceConfig,
+    cfg: Any,
     tools: list[BaseTool],
 ) -> tuple[str, str, list[str]]:
     """Run tool-loop inference for a single question using LangChain tools.
@@ -178,7 +206,8 @@ def run_tool_use_inference(
         question: Raw user question string.
         model: Loaded HF model.
         tokenizer: HF tokenizer.
-        cfg: Tool-use inference configuration.
+        cfg: Tool-use inference config (must include system_prompt, max_calls,
+            and generation fields like max_new_tokens/do_sample[/temperature/top_p]).
         tools: LangChain tool list.
 
     Returns:
@@ -187,9 +216,8 @@ def run_tool_use_inference(
           - parsed_answer_only_final: Final validated <answer>...</answer>.
           - step_contents: Split contents from each <think> to next <think> or end.
     """
-    chat: HFChatModel = HFChatModel(
-        model=model, tokenizer=tokenizer, gen_cfg=cfg.gen_cfg
-    )
+    gen_cfg: HFGenerationConfig = _get_gen_cfg(cfg=cfg)
+    chat: HFChatModel = HFChatModel(model=model, tokenizer=tokenizer, gen_cfg=gen_cfg)
 
     wrapped_question: str = f"<question>{question}</question>"
     messages: list[BaseMessage] = [

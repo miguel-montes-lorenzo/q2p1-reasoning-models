@@ -1,9 +1,15 @@
-// web/public/app.js
+// web/app.js
 const state = {
   activeTab: "phase1",
   backendUrl: null,
-  tagColors: { user: "#8ecbff", think: "#e6e6e6", answer: "#b9f6ca" },
-  tagVisible: { user: true, think: true, answer: true },
+  tagColors: {
+    user: "#8ecbff",
+    think: "#e6e6e6",
+    tools: "#f0f0f0", // light gray for tools
+    answer: "#b9f6ca",
+    error: "#ffd6d6",
+  },
+  tagVisible: { user: true, think: true, tools: true, answer: true, error: true },
   chats: {
     phase1: [],
     phase2: [],
@@ -33,8 +39,6 @@ function setSending(isSending) {
   el.sendBtn.disabled = state.isSending;
   el.promptInput.disabled = state.isSending;
 
-  // Change button appearance with existing classes (no CSS required).
-  // While sending, it becomes a "disabled-like" button.
   el.sendBtn.classList.toggle("primary", !state.isSending);
   el.sendBtn.classList.toggle("danger", state.isSending);
 
@@ -49,6 +53,8 @@ function parseTaggedResponse(text) {
   const out = [];
   const patterns = [
     { tag: "think", re: /<think>([\s\S]*?)<\/think>/gi },
+    { tag: "tools", re: /<tools>([\s\S]*?)<\/tools>/gi },
+    { tag: "error", re: /<error>([\s\S]*?)<\/error>/gi },
     { tag: "answer", re: /<answer>([\s\S]*?)<\/answer>/gi },
   ];
 
@@ -60,7 +66,7 @@ function parseTaggedResponse(text) {
         tag: p.tag,
         start: m.index,
         end: m.index + m[0].length,
-        content: m[1].trim(),
+        content: (m[1] ?? "").trim(),
       });
     }
   }
@@ -74,6 +80,8 @@ function parseTaggedResponse(text) {
 
   const stripped = text
     .replaceAll(/<think>[\s\S]*?<\/think>/gi, "")
+    .replaceAll(/<tools>[\s\S]*?<\/tools>/gi, "")
+    .replaceAll(/<error>[\s\S]*?<\/error>/gi, "")
     .replaceAll(/<answer>[\s\S]*?<\/answer>/gi, "")
     .trim();
   if (stripped.length > 0) out.push({ tag: "answer", content: stripped });
@@ -195,7 +203,10 @@ async function refreshConfig() {
   const data = await resp.json();
 
   state.backendUrl = data.backendUrl ?? null;
-  state.tagColors = data.tagColors ?? state.tagColors;
+
+  // Merge tagColors so new tags (tools/error) remain available even if backend config omits them.
+  const incoming = data.tagColors ?? {};
+  state.tagColors = { ...state.tagColors, ...incoming };
 
   el.backendPortValue.textContent =
     state.backendUrl == null ? "unknown" : String(state.backendUrl);
@@ -215,6 +226,41 @@ function endpointForTab(tab) {
   return "/phase4/agent";
 }
 
+async function readJsonOrText(resp) {
+  const ct = String(resp.headers.get("content-type") ?? "").toLowerCase();
+
+  // Prefer JSON only when it is actually JSON.
+  if (ct.includes("application/json")) {
+    try {
+      const data = await resp.json();
+      return { ok: resp.ok, status: resp.status, statusText: resp.statusText, data };
+    } catch (err) {
+      const text = await resp.text().catch(() => "");
+      return {
+        ok: false,
+        status: resp.status,
+        statusText: resp.statusText,
+        error: `Invalid JSON response: ${String(err)}`,
+        text,
+      };
+    }
+  }
+
+  // Fallback: read plain text (FastAPI 500 HTML, proxies, etc.)
+  const text = await resp.text().catch(() => "");
+  return { ok: resp.ok, status: resp.status, statusText: resp.statusText, text };
+}
+
+function formatNonJsonError(payload) {
+  const status = payload?.status ?? "unknown";
+  const statusText = payload?.statusText ?? "";
+  const detail = payload?.error ? `\n${payload.error}` : "";
+  const body = typeof payload?.text === "string" && payload.text.trim().length > 0
+    ? `\n\n${payload.text}`
+    : "";
+  return `HTTP ${status} ${statusText}${detail}${body}`.trim();
+}
+
 async function sendPrompt() {
   if (state.isSending) return;
 
@@ -229,14 +275,15 @@ async function sendPrompt() {
 
   const endpoint = endpointForTab(state.activeTab);
 
-  let json;
+  let payload;
   try {
     const resp = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prompt }),
     });
-    json = await resp.json();
+
+    payload = await readJsonOrText(resp);
   } catch (err) {
     state.chats[state.activeTab].push({
       role: "model",
@@ -247,10 +294,52 @@ async function sendPrompt() {
     return;
   }
 
+  // If backend returned non-JSON or an HTTP error, show something useful instead
+  // of crashing JSON parsing.
+  if (!payload?.ok) {
+    const msg =
+      payload && "data" in payload && payload.data != null
+        ? (() => {
+            try {
+              return JSON.stringify(payload.data, null, 2);
+            } catch {
+              return String(payload.data);
+            }
+          })()
+        : formatNonJsonError(payload);
+
+    state.chats[state.activeTab].push({
+      role: "model",
+      segments: [{ tag: "answer", content: msg }],
+    });
+    renderChat();
+    setSending(false);
+    return;
+  }
+
+  const json = payload.data;
+
   const raw =
     typeof json?.response === "string" ? json.response : JSON.stringify(json, null, 2);
 
-  const segments = parseTaggedResponse(raw);
+  let segments = [];
+
+  // Phase 2: use trace[].content to render think/tools/answer boxes per step.
+  if (state.activeTab === "phase2" && Array.isArray(json?.trace)) {
+    for (const step of json.trace) {
+      const content = typeof step?.content === "string" ? step.content : "";
+      if (content.trim().length === 0) continue;
+      const stepSegs = parseTaggedResponse(content);
+      segments.push(...stepSegs);
+    }
+
+    // Fallback if trace is empty or missing tags.
+    if (segments.length === 0) {
+      segments = parseTaggedResponse(raw);
+    }
+  } else {
+    segments = parseTaggedResponse(raw);
+  }
 
   state.chats[state.activeTab].push({
     role: "model",
