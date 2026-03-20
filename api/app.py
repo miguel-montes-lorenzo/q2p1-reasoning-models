@@ -21,6 +21,8 @@ from tool_use.langchain.tool_handler import (
 )
 from tool_use.langchain.tool_inference import run_tool_use_inference
 from tool_use.langchain.tools import TOOL_DICT, get_langchain_tools
+from rag.rag_engine import retrieve_context, format_rag_prompt
+from react.agent import ReActAgent
 
 # Add repo root to path so we can import phase modules
 sys.path.append(os.path.dirname(os.path.dirname(p=os.path.abspath(path=__file__))))
@@ -63,7 +65,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 @app.on_event("startup")
 async def startup_event() -> None:
     """Load models once at startup to avoid reloading per request."""
-    global MODEL, TOKENIZER, TOOL_CFG, TOOLS
+    global MODEL, TOKENIZER, TOOL_CFG, TOOLS, AGENT
 
     print("Inicializando API...")
     MODEL, TOKENIZER = load_rlm_model()
@@ -81,8 +83,13 @@ async def startup_event() -> None:
 
     TOOLS = get_langchain_tools()
 
+    AGENT = ReActAgent(
+        model=MODEL, tokenizer=TOKENIZER, cfg=TOOL_CFG, tools=TOOLS
+    )
+
     print("Modelos cargados (RLM).")
     print("Tool-use config listo (prompt con descripciones).")
+    print("ReAct agent inicializado.")
 
 
 class QueryRequest(BaseModel):
@@ -156,22 +163,57 @@ async def phase2_endpoint(request: QueryRequest) -> dict[str, Any]:
 # --- FASE 3: RAG ---
 @app.post(path="/phase3/rag", response_model=GenericResponse, tags=["Fase 3"])
 async def phase3_endpoint(request: QueryRequest) -> dict[str, Any]:
+    """Evaluate phase-3 RAG. Retrieves context, augments prompt, generates with RLM."""
+    if MODEL is None or TOKENIZER is None:
+        return {
+            "response": "ERROR: Modelo de Fase 1 no cargado.",
+            "details": {"status": "todo"},
+        }
+
+    # Step 1: Retrieve relevant documents
+    context_chunks: list[str] = retrieve_context(request.prompt, k=3)
+
+    # Step 2: Build augmented prompt
+    augmented_prompt: str = format_rag_prompt(request.prompt, context_chunks)
+
+    # Step 3: Generate reasoning with the RLM model
+    response_text: str = generate_reasoning(
+        prompt=augmented_prompt,
+        model=MODEL,
+        tokenizer=TOKENIZER,
+        cfg=NORMAL_INFERENCE_CONFIG,
+    )
+
+    # Step 4: Build trace for the UI
+    context_display: str = (
+        "\n\n---\n\n".join(context_chunks) if context_chunks else "(no documents retrieved)"
+    )
+    trace: list[dict[str, Any]] = [
+        {"step": 0, "content": f"<context>{context_display}</context>"},
+        {"step": 1, "content": response_text},
+    ]
+
     return {
-        "response": "Placeholder Fase 3 (RAG)",
-        "details": {"retrieved_docs": ["doc1_placeholder", "doc2_placeholder"]},
+        "response": response_text,
+        "trace": trace,
+        "details": {
+            "stage": "rag",
+            "num_chunks_retrieved": len(context_chunks),
+        },
     }
 
 
 # --- FASE 4: Agente ReAct ---
-@app.post("/phase4/agent", tags=["Fase 4"])
+@app.post(path="/phase4/agent", response_model=GenericResponse, tags=["Fase 4"])
 async def phase4_endpoint(request: QueryRequest) -> dict[str, Any]:
-    if not AGENT:
-        return {"final_answer": "ERROR: Agente no inicializado.", "trace": []}
+    """Evaluate phase-4 ReAct agent. Combines reasoning, tools, and RAG."""
+    if AGENT is None:
+        return {
+            "response": "ERROR: Agente no inicializado.",
+            "details": {"status": "todo"},
+        }
 
-    result = {
-        "final_answer": "Placeholder Fase 4 Agent",
-        "trace": [{"step": 0, "content": "..."}],
-    }
+    result: dict[str, Any] = AGENT.run(request.prompt)
     return result
 
 

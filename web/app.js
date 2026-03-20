@@ -6,10 +6,11 @@ const state = {
     user: "#8ecbff",
     think: "#e6e6e6",
     tools: "#f0f0f0", // light gray for tools
+    context: "#ffe0b2", // warm orange for retrieved docs
     answer: "#b9f6ca",
     error: "#ffd6d6",
   },
-  tagVisible: { user: true, think: true, tools: true, answer: true, error: true },
+  tagVisible: { user: true, think: true, tools: true, context: true, answer: true, error: true },
   chats: {
     phase1: [],
     phase2: [],
@@ -54,6 +55,7 @@ function parseTaggedResponse(text) {
   const patterns = [
     { tag: "think", re: /<think>([\s\S]*?)<\/think>/gi },
     { tag: "tools", re: /<tools>([\s\S]*?)<\/tools>/gi },
+    { tag: "context", re: /<context>([\s\S]*?)<\/context>/gi },
     { tag: "error", re: /<error>([\s\S]*?)<\/error>/gi },
     { tag: "answer", re: /<answer>([\s\S]*?)<\/answer>/gi },
   ];
@@ -81,6 +83,7 @@ function parseTaggedResponse(text) {
   const stripped = text
     .replaceAll(/<think>[\s\S]*?<\/think>/gi, "")
     .replaceAll(/<tools>[\s\S]*?<\/tools>/gi, "")
+    .replaceAll(/<context>[\s\S]*?<\/context>/gi, "")
     .replaceAll(/<error>[\s\S]*?<\/error>/gi, "")
     .replaceAll(/<answer>[\s\S]*?<\/answer>/gi, "")
     .trim();
@@ -324,8 +327,8 @@ async function sendPrompt() {
 
   let segments = [];
 
-  // Phase 2: use trace[].content to render think/tools/answer boxes per step.
-  if (state.activeTab === "phase2" && Array.isArray(json?.trace)) {
+  // Phase 2, 3 & 4: use trace[].content to render step-by-step boxes.
+  if ((state.activeTab === "phase2" || state.activeTab === "phase3" || state.activeTab === "phase4") && Array.isArray(json?.trace)) {
     for (const step of json.trace) {
       const content = typeof step?.content === "string" ? step.content : "";
       if (content.trim().length === 0) continue;

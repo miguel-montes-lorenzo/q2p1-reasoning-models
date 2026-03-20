@@ -177,6 +177,11 @@ MAX_THINK_CALLS: int = 4
 
 
 TOOL_SYSTEM_PROMPT: str = (
+    "YOU HAVE ACCESS TO TOOLS. You MUST use them whenever a computation is needed.\n"
+    "You CANNOT do math in your head. Even simple operations like 2+2 or 3*4 MUST\n"
+    "be done with the calculator tool. NEVER write a numeric answer that was not\n"
+    "produced by a tool call.\n"
+    "\n"
     "TOOL USAGE RULES:\n"
     "Tools may be invoked ONLY inside the <think>...</think> section.\n"
     "Tools are NEVER allowed inside the <answer> section.\n"
@@ -343,6 +348,20 @@ TOOL_SYSTEM_PROMPT: str = (
     "\n"
     "Parsed answer:\n"
     "<answer>212.68</answer>\n"
+    "\n"
+    "---\n"
+    "FOURTH EXAMPLE (NATURAL LANGUAGE QUESTION):\n"
+    "\n"
+    "Input:\n"
+    "<question>How many months are in 73 years?</question>\n"
+    "\n"
+    "Response:\n"
+    "<think>There are 12 months in a year. I need to multiply 73 by 12. "
+    '@calculator(expression="73 * 12")->1.</think>\n'
+    "<answer>@1</answer>\n"
+    "\n"
+    "Parsed answer:\n"
+    "<answer>876</answer>\n"
 )
 
 

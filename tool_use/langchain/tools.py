@@ -9,6 +9,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from langchain_core.tools import StructuredTool
+from rag.rag_engine import retrieve_context
 
 load_dotenv()  # Load from current working directory if present
 
@@ -90,11 +91,43 @@ def _docstring_description(*, fn: Callable[..., Any]) -> str:
     return doc.strip()
 
 
+def knowledge_base_search(*, query: str) -> str:
+    """Search the knowledge base for information relevant to a query.
+
+    This tool searches a vector database of documents and returns the most
+    relevant text passages. Use this tool when the question asks about
+    specific content from the knowledge base (characters, events, details
+    from books like Harry Potter or Mistborn).
+
+    WHEN TO USE:
+        - The question asks about characters, events, or details from books/documents.
+        - You need factual information that is not general knowledge.
+
+    WHEN NOT TO USE:
+        - The question is purely mathematical (use calculator instead).
+        - The question is about general knowledge you already know.
+
+    Args:
+        query: Natural language search query describing the information needed.
+
+    Returns:
+        Retrieved text passages from the knowledge base, separated by dividers.
+    """
+    results: list[str] = retrieve_context(query, k=3)
+    if not results:
+        return "No relevant documents found."
+    return "\n\n---\n\n".join(results)
+
+
 TOOL_DICT: dict[str, dict[str, Any]] = {
     "calculator": {
         "function": calculator,
         "description": _docstring_description(fn=calculator),
-    }
+    },
+    "knowledge_base_search": {
+        "function": knowledge_base_search,
+        "description": _docstring_description(fn=knowledge_base_search),
+    },
 }
 
 
