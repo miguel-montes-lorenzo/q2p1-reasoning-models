@@ -14,6 +14,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+# Add repo root to path so local packages (rlm, tool_use, rag, react) are importable
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 from rlm.config import INFERENCE_CONFIG as NORMAL_INFERENCE_CONFIG
 from tool_use.langchain.config import INFERENCE_CONFIG as TOOL_INFERENCE_CONFIG
 from tool_use.langchain.tool_handler import (
@@ -23,9 +27,6 @@ from tool_use.langchain.tool_inference import run_tool_use_inference
 from tool_use.langchain.tools import TOOL_DICT, get_langchain_tools
 from rag.rag_engine import retrieve_context, format_rag_prompt
 from react.agent import ReActAgent
-
-# Add repo root to path so we can import phase modules
-sys.path.append(os.path.dirname(os.path.dirname(p=os.path.abspath(path=__file__))))
 
 # --- IMPORTACIONES DE LOS MÓDULOS DE LOS ALUMNOS ---
 from rlm.inference import generate_reasoning, load_rlm_model

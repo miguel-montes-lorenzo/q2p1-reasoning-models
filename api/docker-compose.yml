@@ -48,6 +48,7 @@ services:
       - ${REPO_PATH}/api:/home/root/api
       - ${REPO_PATH}/rlm:/home/root/rlm
       - ${REPO_PATH}/tool_use:/home/root/tool_use
+      - ${REPO_PATH}/react:/home/root/react
       - ${REPO_PATH}/rag:/home/root/rag
       - ${REPO_PATH}/weights:/home/root/weights
       - ${REPO_PATH}/utils:/home/root/utils
