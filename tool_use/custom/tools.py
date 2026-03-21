@@ -1,10 +1,92 @@
 # tool_use/tools.py
 
+import inspect
+import json
+import os
 from typing import Any
+from urllib import error, parse, request
 
 from dotenv import load_dotenv
 
 load_dotenv()  # Intenta cargar desde el directorio de trabajo actual
+
+_FDC_BASE_URL: str = "https://api.nal.usda.gov/fdc/v1"
+
+
+def food_data_central_search(query: str, page_size: str = "5") -> str:
+    """Search USDA FoodData Central and return a compact list of matching foods.
+
+    This tool calls the FoodData Central `/foods/search` endpoint to find foods
+    matching a free-text query. It is useful for nutrition-related questions,
+    ingredient lookup, or identifying exact branded/foundation food entries.
+
+    Authentication:
+        - Requires environment variable `FDC_API_KEY`.
+        - If not set, the tool automatically falls back to `DEMO_KEY`.
+
+    Args:
+        query: Search text such as "cheddar cheese" or "banana".
+        page_size: Number of results to return, as string. Valid range is 1-25.
+
+    Returns:
+        JSON string with:
+            - query
+            - total_hits
+            - foods: list of compact food records with `fdcId`, `description`,
+              `dataType`, and `brandName` (when available).
+    """
+    api_key: str = os.getenv("FDC_API_KEY", "DEMO_KEY").strip() or "DEMO_KEY"
+
+    if not query.strip():
+        raise ValueError("`query` cannot be empty.")
+
+    try:
+        parsed_page_size: int = int(page_size)
+    except ValueError as exc:
+        raise ValueError("`page_size` must be an integer between 1 and 25.") from exc
+
+    parsed_page_size = max(1, min(25, parsed_page_size))
+
+    url: str = f"{_FDC_BASE_URL}/foods/search?api_key={parse.quote(api_key)}"
+    payload: dict[str, Any] = {"query": query, "pageSize": parsed_page_size}
+    body: bytes = json.dumps(payload).encode("utf-8")
+
+    req: request.Request = request.Request(
+        url=url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with request.urlopen(req, timeout=20) as resp:
+            raw: bytes = resp.read()
+    except error.HTTPError as exc:
+        details: str = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"FoodData Central HTTP {exc.code}: {details[:300]}"
+        ) from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"FoodData Central connection error: {exc.reason}") from exc
+
+    data: dict[str, Any] = json.loads(raw.decode("utf-8"))
+    foods: list[dict[str, Any]] = []
+    for food in data.get("foods", []):
+        foods.append(
+            {
+                "fdcId": food.get("fdcId"),
+                "description": food.get("description"),
+                "dataType": food.get("dataType"),
+                "brandName": food.get("brandName"),
+            }
+        )
+
+    result: dict[str, Any] = {
+        "query": query,
+        "total_hits": data.get("totalHits", 0),
+        "foods": foods,
+    }
+    return json.dumps(result, ensure_ascii=True)
 
 
 def calculator(expression: str) -> str:
@@ -110,5 +192,9 @@ Returns:
 
 
 TOOL_DICT: dict[str, Any] = {
-    "calculator": {"function": calculator, "description": CALCULATOR_DESCRIPTION}
+    "calculator": {"function": calculator, "description": CALCULATOR_DESCRIPTION},
+    "food_data_central_search": {
+        "function": food_data_central_search,
+        "description": inspect.getdoc(food_data_central_search) or "",
+    },
 }

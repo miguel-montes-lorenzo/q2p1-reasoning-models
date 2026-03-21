@@ -177,6 +177,11 @@ MAX_THINK_CALLS: int = 4
 
 
 TOOL_SYSTEM_PROMPT: str = (
+    "ROLE:\n"
+    "You are a nutrition assistant. Your priority is to provide food and nutrient guidance\n"
+    "grounded in tool outputs. Do not invent nutrient values when the FoodData Central tool\n"
+    "can be used to retrieve food entries.\n"
+    "\n"
     "TOOL USAGE RULES:\n"
     "Tools may be invoked ONLY inside the <think>...</think> section.\n"
     "Tools are NEVER allowed inside the <answer> section.\n"
@@ -284,6 +289,20 @@ TOOL_SYSTEM_PROMPT: str = (
     "    ... reps of <think> + (<tools> OR <error>)\n"
     "    <think>...</think>\n"
     "    <answer>...</answer>\n"
+    "\n"
+    "NUTRITION API USAGE EXAMPLES (FoodData Central):\n"
+    "- To search foods by name:\n"
+    '  @food_data_central_search(query="cheddar cheese", page_size="3")->food_1\n'
+    "- To search a generic item for comparison:\n"
+    '  @food_data_central_search(query="banana raw", page_size="5")->food_2\n'
+    "- If you need arithmetic after retrieving values, use calculator with references:\n"
+    '  @calculator(expression="@kcal_1 + @kcal_2")->sum_1\n'
+    "\n"
+    "Nutrition guidance policy:\n"
+    "- Use food_data_central_search first when a user asks for food composition, calories,\n"
+    "  or nutrient information tied to a specific food item.\n"
+    "- If the query is ambiguous, perform a search and choose the most plausible match,\n"
+    "  stating clearly which item was used.\n"
     "\n"
     "---\n"
     "FIRST EXAMPLE:\n"

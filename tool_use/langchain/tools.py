@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import inspect
+import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib import error, parse, request
 
 from dotenv import load_dotenv
 from langchain_core.tools import StructuredTool
 from rag.rag_engine import retrieve_context
 
 load_dotenv()  # Load from current working directory if present
+
+_FDC_BASE_URL: str = "https://api.nal.usda.gov/fdc/v1"
 
 
 def calculator(*, expression: str) -> str:
@@ -92,20 +97,20 @@ def _docstring_description(*, fn: Callable[..., Any]) -> str:
 
 
 def knowledge_base_search(*, query: str) -> str:
-    """Search the knowledge base for information relevant to a query.
+    """Search the knowledge base for recipes, cooking techniques, and food information.
 
-    This tool searches a vector database of documents and returns the most
-    relevant text passages. Use this tool when the question asks about
-    specific content from the knowledge base (characters, events, details
-    from books like Harry Potter or Mistborn).
+    This tool searches a vector database of cookbooks and food documents. It returns
+    the most relevant text passages. Use this tool when the question is about recipes,
+    cooking methods, ingredients, or food preparation.
 
     WHEN TO USE:
-        - The question asks about characters, events, or details from books/documents.
-        - You need factual information that is not general knowledge.
+        - The user asks for a recipe (e.g. "banana bread recipe", "how to make soup").
+        - The user asks about cooking techniques or food preparation.
+        - The user asks about ingredient lists or cooking instructions.
 
     WHEN NOT TO USE:
-        - The question is purely mathematical (use calculator instead).
-        - The question is about general knowledge you already know.
+        - The user asks for specific nutrient values (use food_data_central_search).
+        - The question is purely mathematical (use calculator).
 
     Args:
         query: Natural language search query describing the information needed.
@@ -119,6 +124,99 @@ def knowledge_base_search(*, query: str) -> str:
     return "\n\n---\n\n".join(results)
 
 
+_KEY_NUTRIENT_IDS: dict[int, str] = {
+    1008: "energy_kcal",
+    1003: "protein_g",
+    1004: "fat_g",
+    1005: "carbs_g",
+    2000: "sugar_g",
+    1079: "fiber_g",
+    1253: "cholesterol_mg",
+    1093: "sodium_mg",
+}
+
+
+def food_data_central_search(*, query: str, page_size: str = "3") -> str:
+    """Search USDA FoodData Central for foods and their nutrition data.
+
+    This tool searches the USDA food database and returns matching foods with
+    their key nutrients (calories, protein, fat, carbs, sugar, fiber per 100g).
+
+    WHEN TO USE:
+        - The user asks about calories, nutrients, or nutritional info of a food.
+        - You need to compare nutritional values of different foods.
+        - You need a numeric nutrient value to do a calculation.
+
+    WHEN NOT TO USE:
+        - The question is about recipes or cooking techniques (use knowledge_base_search).
+        - The question is purely mathematical (use calculator).
+
+    Args:
+        query: Food search text, e.g. "banana raw", "cheddar cheese", "chicken breast".
+        page_size: Number of results (as string). Default "3", max "5".
+
+    Returns:
+        JSON with matching foods and their nutrients per 100g.
+    """
+    api_key: str = os.getenv("FDC_API_KEY", "DEMO_KEY").strip() or "DEMO_KEY"
+
+    if not query.strip():
+        raise ValueError("`query` cannot be empty.")
+
+    try:
+        parsed_page_size: int = int(page_size)
+    except ValueError as exc:
+        raise ValueError("`page_size` must be an integer between 1 and 5.") from exc
+
+    parsed_page_size = max(1, min(5, parsed_page_size))
+
+    url: str = f"{_FDC_BASE_URL}/foods/search?api_key={parse.quote(api_key)}"
+    payload: dict[str, Any] = {"query": query, "pageSize": parsed_page_size}
+    body: bytes = json.dumps(payload).encode("utf-8")
+
+    req: request.Request = request.Request(
+        url=url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with request.urlopen(req, timeout=20) as resp:
+            raw: bytes = resp.read()
+    except error.HTTPError as exc:
+        details: str = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"FoodData Central HTTP {exc.code}: {details[:300]}"
+        ) from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"FoodData Central connection error: {exc.reason}") from exc
+
+    data: dict[str, Any] = json.loads(raw.decode("utf-8"))
+    foods: list[dict[str, Any]] = []
+    for food in data.get("foods", []):
+        nutrients: dict[str, float] = {}
+        for n in food.get("foodNutrients", []):
+            nid: int = n.get("nutrientId", 0)
+            if nid in _KEY_NUTRIENT_IDS:
+                nutrients[_KEY_NUTRIENT_IDS[nid]] = n.get("value", 0)
+
+        foods.append(
+            {
+                "description": food.get("description"),
+                "dataType": food.get("dataType"),
+                "nutrients_per_100g": nutrients,
+            }
+        )
+
+    result: dict[str, Any] = {
+        "query": query,
+        "total_hits": data.get("totalHits", 0),
+        "foods": foods,
+    }
+    return json.dumps(result, ensure_ascii=True)
+
+
 TOOL_DICT: dict[str, dict[str, Any]] = {
     "calculator": {
         "function": calculator,
@@ -127,6 +225,10 @@ TOOL_DICT: dict[str, dict[str, Any]] = {
     "knowledge_base_search": {
         "function": knowledge_base_search,
         "description": _docstring_description(fn=knowledge_base_search),
+    },
+    "food_data_central_search": {
+        "function": food_data_central_search,
+        "description": _docstring_description(fn=food_data_central_search),
     },
 }
 

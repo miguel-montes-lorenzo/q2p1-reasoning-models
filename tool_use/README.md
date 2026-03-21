@@ -45,6 +45,36 @@ Nunca puede haber una respuesta final <answer>...</answer> vacía o null, salvo 
 Nota. véase que no tiene ningún sentido utilizar etiquetas <id ...> fuera de los argumentos de tools o del contenido de <answer>...</answer>, ya que no serán formateadas en ningún momento y no contribuirá a acelerar el razoanamiento en ninguna medida
 
 
+## Tool nueva: FoodData Central (USDA)
+
+Se ha anadido la herramienta `food_data_central_search` en:
+
+- `tool_use/custom/tools.py`
+- `tool_use/langchain/tools.py`
+
+Funcion:
+
+- Llama al endpoint oficial `POST /foods/search` de FoodData Central.
+- Recibe:
+  - `query` (texto de busqueda, obligatorio)
+  - `page_size` (tamano de pagina, opcional, 1-25)
+- Devuelve un JSON compacto con `query`, `total_hits` y una lista de alimentos
+  (`fdcId`, `description`, `dataType`, `brandName`).
+
+Configuracion de API key:
+
+- Define la variable de entorno `FDC_API_KEY` con tu clave de Data.gov.
+- Si no existe, la tool cae a `DEMO_KEY` automaticamente.
+
+Ejemplo (PowerShell):
+
+```powershell
+$env:FDC_API_KEY = "TU_API_KEY"
+```
+
+Nota de seguridad: no subas la clave real al repositorio.
+
+
 NOTA ADICIONAL.
 En el fichero de answers/tool_use.json con formato:
   {
