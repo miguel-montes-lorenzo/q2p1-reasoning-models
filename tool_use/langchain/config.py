@@ -16,6 +16,7 @@ REPO_DIR: Path = find_parent_with_markers(start=Path.cwd())
 
 
 MAX_THINK_CALLS: int = 4
+REACT_MAX_THINK_CALLS: int = 12
 
 
 # TOOL_SYSTEM_PROMPT: str = (
@@ -396,6 +397,110 @@ TOOL_SYSTEM_PROMPT: str = (
 )
 
 
+REACT_SYSTEM_PROMPT: str = (
+    "\n\n"
+    "MULTI-STEP REASONING (ReAct Agent):\n"
+    f"You have up to {REACT_MAX_THINK_CALLS} iterations. Use as many as you need.\n"
+    "For complex questions, break the task into steps. Each <think> block should do ONE step:\n"
+    "  1. Search for information (recipe, food data, etc.)\n"
+    "  2. Read the results, then search for more if needed\n"
+    "  3. Use the calculator for any arithmetic\n"
+    "  4. Combine results and give the final answer\n"
+    "\n"
+    "IMPORTANT: Call ONE or TWO tools per <think> block, then STOP and wait for results.\n"
+    "Do NOT try to do everything in a single <think>.\n"
+    "Your <answer> must be DETAILED and COMPLETE — include all data you gathered.\n"
+    "\n"
+    "---\n"
+    "MULTI-STEP EXAMPLE (Recipe + Nutrition Analysis):\n"
+    "\n"
+    "Input:\n"
+    "<question>Find a muffin recipe and calculate the total calories.</question>\n"
+    "\n"
+    "Step 1 — search the cookbook:\n"
+    "<think>First I need to find a muffin recipe.\n"
+    '@knowledge_base_search(query="muffin recipe")->1.</think>\n'
+    "\n"
+    "<tools>\n"
+    "{\n"
+    "    1: {\n"
+    "        tool: 'knowledge_base_search',\n"
+    "        successful_execution: True,\n"
+    "        args: {'query': 'muffin recipe'},\n"
+    "        output: 'Berry Muffins: 2 cups flour, 1/4 cup sugar, 2 tbsp butter, 1 cup milk, 1 cup berries'\n"
+    "    }\n"
+    "}\n"
+    "</tools>\n"
+    "\n"
+    "Step 2 — look up calories for flour:\n"
+    "<think>The recipe has: 2 cups flour (~240g), 1/4 cup sugar (~50g), 2 tbsp butter (~28g), 1 cup milk (~244g), 1 cup berries (~150g).\n"
+    "I will look up each ingredient. Starting with flour.\n"
+    '@food_data_central_search(query="all purpose flour", page_size="1")->2.</think>\n'
+    "\n"
+    "<tools>\n"
+    "{\n"
+    "    2: {\n"
+    "        tool: 'food_data_central_search',\n"
+    "        successful_execution: True,\n"
+    "        args: {'query': 'all purpose flour', 'page_size': '1'},\n"
+    "        output: '{\"foods\":[{\"description\":\"Flour, wheat, all-purpose\",\"nutrients_per_100g\":{\"energy_kcal\":361}}]}'\n"
+    "    }\n"
+    "}\n"
+    "</tools>\n"
+    "\n"
+    "Step 3 — look up sugar and butter:\n"
+    "<think>Flour: 361 kcal/100g. Now sugar and butter.\n"
+    '@food_data_central_search(query="granulated sugar", page_size="1")->3.\n'
+    '@food_data_central_search(query="butter salted", page_size="1")->4.</think>\n'
+    "\n"
+    "<tools>\n"
+    "{\n"
+    "    3: { tool: 'food_data_central_search', successful_execution: True, args: {'query': 'granulated sugar', 'page_size': '1'},\n"
+    "        output: '{\"foods\":[{\"description\":\"Sugar, granulated\",\"nutrients_per_100g\":{\"energy_kcal\":387}}]}' },\n"
+    "    4: { tool: 'food_data_central_search', successful_execution: True, args: {'query': 'butter salted', 'page_size': '1'},\n"
+    "        output: '{\"foods\":[{\"description\":\"Butter, salted\",\"nutrients_per_100g\":{\"energy_kcal\":717}}]}' }\n"
+    "}\n"
+    "</tools>\n"
+    "\n"
+    "Step 4 — look up milk and berries:\n"
+    "<think>Sugar: 387 kcal/100g. Butter: 717 kcal/100g. Now milk and berries.\n"
+    '@food_data_central_search(query="whole milk", page_size="1")->5.\n'
+    '@food_data_central_search(query="blueberries raw", page_size="1")->6.</think>\n'
+    "\n"
+    "<tools>\n"
+    "{\n"
+    "    5: { tool: 'food_data_central_search', successful_execution: True, args: {'query': 'whole milk', 'page_size': '1'},\n"
+    "        output: '{\"foods\":[{\"description\":\"Milk, whole\",\"nutrients_per_100g\":{\"energy_kcal\":61}}]}' },\n"
+    "    6: { tool: 'food_data_central_search', successful_execution: True, args: {'query': 'blueberries raw', 'page_size': '1'},\n"
+    "        output: '{\"foods\":[{\"description\":\"Blueberries, raw\",\"nutrients_per_100g\":{\"energy_kcal\":57}}]}' }\n"
+    "}\n"
+    "</tools>\n"
+    "\n"
+    "Step 5 — calculate total:\n"
+    '<think>Now I calculate calories for each ingredient and sum them.\n'
+    "Flour: 240g * 361/100 = ?, Sugar: 50g * 387/100 = ?, Butter: 28g * 717/100 = ?, "
+    "Milk: 244g * 61/100 = ?, Berries: 150g * 57/100 = ?\n"
+    '@calculator(expression="240*361/100 + 50*387/100 + 28*717/100 + 244*61/100 + 150*57/100")->7.</think>\n'
+    "\n"
+    "<tools>\n"
+    "{\n"
+    "    7: { tool: 'calculator', successful_execution: True, args: {'expression': '240*361/100 + 50*387/100 + 28*717/100 + 244*61/100 + 150*57/100'},\n"
+    "        output: '1372.9' }\n"
+    "}\n"
+    "</tools>\n"
+    "\n"
+    "Step 6 — final answer:\n"
+    "<think>Total calories for Berry Muffins recipe: @7 kcal. Let me give a detailed breakdown.</think>\n"
+    "<answer>Berry Muffins — Total: approximately @7 kcal\n"
+    "Breakdown:\n"
+    "- 2 cups flour (240g): 866.4 kcal\n"
+    "- 1/4 cup sugar (50g): 193.5 kcal\n"
+    "- 2 tbsp butter (28g): 200.8 kcal\n"
+    "- 1 cup milk (244g): 148.8 kcal\n"
+    "- 1 cup berries (150g): 85.5 kcal</answer>\n"
+)
+
+
 USE_4_BIT: bool = True
 MAX_SEQ_LEN: int = 1024
 
@@ -531,5 +636,32 @@ class INFERENCE_CONFIG:
 
     # tool use
     max_calls: int = MAX_THINK_CALLS
+
+    checkpoint_directory: Path = REPO_DIR / "weights/tool_use/sft_lora/best_checkpoint"
+
+
+@dataclass(frozen=True)
+class REACT_INFERENCE_CONFIG:
+    """Inference config for the Phase 4 ReAct agent.
+
+    Same as INFERENCE_CONFIG but with higher max_calls and the ReAct
+    multi-step system prompt appended.
+    """
+
+    model_name: str = MODEL_NAME
+    dataset_name: str = DATASET_NAME
+    dataset_config: str = DATASET_CONFIG
+
+    use_4bit: bool = USE_4_BIT
+    max_seq_len: int = MAX_SEQ_LEN
+
+    system_prompt: str = f"{SYSTEM_PROMPT}{TOOL_SYSTEM_PROMPT}{REACT_SYSTEM_PROMPT}{SYSTEM_PROMPT_END}"
+
+    do_sample: bool = True
+    max_new_tokens: int = MAX_NEW_TOKENS
+    temperature: float | None = TEMPERATURE if do_sample else None
+    top_p: float | None = TOP_P if do_sample else None
+
+    max_calls: int = REACT_MAX_THINK_CALLS
 
     checkpoint_directory: Path = REPO_DIR / "weights/tool_use/sft_lora/best_checkpoint"

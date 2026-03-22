@@ -56,7 +56,11 @@ def format_rag_prompt(query: str, context_list: list[str]) -> str:
     """
     context_str = "\n\n".join(context_list)
     return (
-        "Use the following context to answer the user's question. "
+        "Use the following context to answer the user's question.\n"
+        "IMPORTANT: Your <answer> must be DETAILED and COMPLETE. "
+        "Include ALL relevant information from the context — full ingredient lists, "
+        "quantities, and step-by-step instructions when the question asks for a recipe. "
+        "Do NOT summarize to just a title or a single sentence.\n"
         "If you cannot answer based on the context, say so.\n\n"
         f"Context:\n{context_str}\n\n"
         f"Question: {query}"

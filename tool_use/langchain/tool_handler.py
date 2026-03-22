@@ -26,11 +26,16 @@ _ERR_REF_UNDEFINED_ID_PREFIX: str = "Reference to undefined id: "
 _ERR_UNEXISTENT_ARGUMENTS_PREFIX: str = "Use of unexistent arguments for function "
 
 
-def insert_tool_desciptions_in_system_propt(descriptions: dict[str, str]) -> str:
+def insert_tool_desciptions_in_system_propt(
+    descriptions: dict[str, str],
+    extra_prompt: str = "",
+) -> str:
     """Build a system prompt with tool spec and per-tool descriptions.
 
     Args:
         descriptions: Mapping from tool name to a human-readable description.
+        extra_prompt: Optional additional prompt text appended after tool
+            descriptions (e.g. ReAct multi-step instructions).
 
     Returns:
         Full system prompt including tool rules and tool descriptions.
@@ -41,7 +46,7 @@ def insert_tool_desciptions_in_system_propt(descriptions: dict[str, str]) -> str
             f"{tool_descriptions}\n{tool_name}:\n{tool_description}\n---"
         )
     tool_descriptions = f"{tool_descriptions}\n\n"
-    return f"{SYSTEM_PROMPT}{TOOL_SYSTEM_PROMPT}{tool_descriptions}{SYSTEM_PROMPT_END}"
+    return f"{SYSTEM_PROMPT}{TOOL_SYSTEM_PROMPT}{tool_descriptions}{extra_prompt}{SYSTEM_PROMPT_END}"
 
 
 @dataclass(frozen=True)

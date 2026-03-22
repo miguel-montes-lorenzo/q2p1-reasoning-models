@@ -20,6 +20,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 from rlm.config import INFERENCE_CONFIG as NORMAL_INFERENCE_CONFIG
 from tool_use.langchain.config import INFERENCE_CONFIG as TOOL_INFERENCE_CONFIG
+from tool_use.langchain.config import REACT_INFERENCE_CONFIG
 from tool_use.langchain.tool_handler import (
     insert_tool_desciptions_in_system_propt,
 )
@@ -84,8 +85,17 @@ async def startup_event() -> None:
 
     TOOLS = get_langchain_tools()
 
+    # ReAct agent gets its own config with higher iteration limit and multi-step prompt
+    from tool_use.langchain.config import REACT_SYSTEM_PROMPT
+    react_augmented_system_prompt: str = insert_tool_desciptions_in_system_propt(
+        descriptions=descriptions, extra_prompt=REACT_SYSTEM_PROMPT
+    )
+    react_cfg = replace(
+        REACT_INFERENCE_CONFIG(), system_prompt=react_augmented_system_prompt
+    )
+
     AGENT = ReActAgent(
-        model=MODEL, tokenizer=TOKENIZER, cfg=TOOL_CFG, tools=TOOLS
+        model=MODEL, tokenizer=TOKENIZER, cfg=react_cfg, tools=TOOLS
     )
 
     print("Modelos cargados (RLM).")
