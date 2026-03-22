@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -14,75 +15,158 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import SFTConfig, SFTTrainer
 from utils.paths import check_cwd
 
-from tool_use.langchain.config import REPO_DIR
+from tool_use.langchain.config import MAX_THINK_CALLS, REPO_DIR
 from tool_use.langchain.config import SFT_CONFIG as CONFIG
 from tool_use.langchain.tool_handler import insert_tool_desciptions_in_system_propt
-from tool_use.langchain.tool_inference import run_tool_use_inference
-from tool_use.langchain.tools import TOOL_DICT, get_langchain_tools
+from tool_use.langchain.tools import TOOL_DICT, calculator
 
 
-def _build_bnb_config(*, use_4bit: bool) -> BitsAndBytesConfig | None:
-    """Create a BitsAndBytes quantization config.
+# ---------------------------------------------------------------------------
+# Gold transcript generation (no model needed)
+# ---------------------------------------------------------------------------
+
+_CALC_RE: re.Pattern[str] = re.compile(r"<<([^=]+)=([^>]+)>>")
+
+
+def _render_tools_block(tool_id: str, expression: str, result: str) -> str:
+    """Render a single-tool <tools> block matching tool_handler format."""
+    escaped_expr: str = expression.replace("'", "\\'")
+    escaped_result: str = result.replace("'", "\\'")
+    return (
+        "<tools>\n"
+        "{\n"
+        f"    {tool_id}: {{\n"
+        "        tool: 'calculator',\n"
+        "        successful_execution: True,\n"
+        "        args: {\n"
+        f"            'expression': '{escaped_expr}',\n"
+        "        },\n"
+        f"        output: '{escaped_result}'\n"
+        "    },\n"
+        "}\n"
+        "</tools>"
+    )
+
+
+def _build_gold_transcript(
+    answer_field: str,
+    *,
+    max_iterations: int = MAX_THINK_CALLS,
+) -> str | None:
+    """Build a gold tool-use transcript from a GSM8K answer field.
+
+    Parses <<expr=result>> markers and converts each calculation into a
+    proper tool-call cycle:
+      <think>...reasoning... @calculator(expression="...")->ID.</think>
+      <tools>...</tools>
+
+    The final answer uses @ID to reference the last calculator result.
 
     Args:
-        use_4bit: Whether to enable 4-bit NF4 quantization.
+        answer_field: Raw GSM8K answer string (with #### marker).
+        max_iterations: Maximum think iterations allowed.
 
     Returns:
-        A BitsAndBytesConfig if enabled, else None.
+        Complete assistant transcript, or None if unparseable.
     """
-    if not use_4bit:
+    # Split answer from reasoning
+    if "####" not in answer_field:
+        return None
+    reasoning_part: str = answer_field.split("####")[0].strip()
+    final_answer: str = answer_field.split("####")[-1].strip()
+
+    # Find all <<expr=result>> markers
+    calcs: list[tuple[str, str, int, int]] = []
+    for m in _CALC_RE.finditer(reasoning_part):
+        expr: str = m.group(1).strip()
+        result: str = m.group(2).strip()
+        calcs.append((expr, result, m.start(), m.end()))
+
+    if not calcs:
         return None
 
-    return BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-    )
+    # Build steps: split reasoning text around each <<>> marker
+    # and pair each chunk of reasoning with its calculator call.
+    segments: list[str] = []
+    prev_end: int = 0
+    tool_id: int = 1
+
+    for expr, result, start, end in calcs:
+        # The reasoning text before this calculation
+        text_before: str = reasoning_part[prev_end:start].strip()
+        # Clean up any leftover result text after >> (e.g. "24 clips in May.")
+        prev_end = end
+
+        # Evaluate the expression with our calculator to get the real result
+        try:
+            real_result: str = calculator(expression=expr)
+        except Exception:
+            real_result = result
+
+        # Build think block with tool call
+        reasoning_text: str = text_before if text_before else f"I compute {expr}."
+        # Remove any <<>> markers that might be in the reasoning text
+        reasoning_text = _CALC_RE.sub("", reasoning_text).strip()
+        if not reasoning_text:
+            reasoning_text = f"I compute {expr}."
+
+        think_content: str = (
+            f'{reasoning_text} @calculator(expression="{expr}")->{tool_id}.'
+        )
+        tools_block: str = _render_tools_block(
+            str(tool_id), expr, real_result
+        )
+        segments.append(f"<think>{think_content}</think>\n{tools_block}")
+        tool_id += 1
+
+    # If we have more iterations than allowed, batch the last ones together
+    if len(segments) > max_iterations - 1:
+        # Keep first (max_iterations - 2) individual steps, batch the rest
+        kept: list[str] = segments[: max_iterations - 2]
+        # For the batched segment, just keep the last one
+        kept.append(segments[-1])
+        segments = kept
+
+    # Final think + answer referencing the last tool ID
+    last_id: int = tool_id - 1
+    final_think: str = f"<think>The answer is @{last_id}.</think>"
+    final_answer_block: str = f"<answer>@{last_id}</answer>"
+    segments.append(f"{final_think}\n{final_answer_block}")
+
+    return "\n".join(segments)
 
 
-def _example_to_sft_text(
+def _example_to_gold_sft_text(
     example: dict[str, Any],
     *,
-    model: torch.nn.Module,
     tokenizer: Any,
-    cfg: Any,
-    tools: list[Any],
-) -> str:
-    """Generate a single SFT training string for one GSM8K example.
+    system_prompt: str,
+) -> str | None:
+    """Generate a gold SFT training string for one GSM8K example.
 
-    This runs the tool-use loop in-process (GPU-safe) and wraps the resulting
-    transcript as the assistant turn.
+    Instead of running the model (which produces bad habits), this builds
+    a perfect transcript synthetically from the GSM8K answer annotations.
 
     Args:
-        example: Dataset row with "question".
-        model: HF causal LM.
+        example: Dataset row with "question" and "answer".
         tokenizer: HF tokenizer.
-        cfg: Tool-use inference config.
-        tools: LangChain tools.
+        system_prompt: Full system prompt with tool descriptions.
 
     Returns:
-        Rendered chat-template training text.
+        Rendered chat-template training text, or None if unparseable.
     """
     question: str = str(example["question"])
+    answer_field: str = str(example["answer"])
     wrapped_question: str = f"<question>{question}</question>"
 
-    full_output: str
-    _parsed_answer_only: str
-    _step_contents: list[str]
-    full_output, _parsed_answer_only, _step_contents = run_tool_use_inference(
-        question=question,
-        model=model,
-        tokenizer=tokenizer,
-        cfg=cfg,
-        tools=tools,
-        formatted_references=True,
-    )
+    transcript: str | None = _build_gold_transcript(answer_field)
+    if transcript is None:
+        return None
 
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": str(cfg.system_prompt)},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": wrapped_question},
-        {"role": "assistant", "content": full_output},
+        {"role": "assistant", "content": transcript},
     ]
 
     return str(
@@ -94,8 +178,25 @@ def _example_to_sft_text(
     )
 
 
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+
+
+def _build_bnb_config(*, use_4bit: bool) -> BitsAndBytesConfig | None:
+    """Create a BitsAndBytes quantization config."""
+    if not use_4bit:
+        return None
+    return BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+
+
 def train() -> None:
-    """Run LoRA SFT on GSM8K using tool-loop generated transcripts."""
+    """Run LoRA SFT on GSM8K using gold tool-call transcripts."""
     cfg_base: CONFIG = CONFIG()
 
     descriptions: dict[str, str] = {
@@ -129,8 +230,6 @@ def train() -> None:
     model.generation_config.pad_token_id = tokenizer.pad_token_id
     model.generation_config.eos_token_id = tokenizer.eos_token_id
 
-    tools: list[Any] = get_langchain_tools()
-
     peft_config: LoraConfig = LoraConfig(
         r=16,
         lora_alpha=32,
@@ -151,20 +250,21 @@ def train() -> None:
     raw: Any = load_dataset(path=cfg.dataset_name, name=cfg.dataset_config)
     dataset: Dataset = raw["train"]
 
-    # Build texts sequentially to avoid CUDA-in-fork issues.
+    # Build gold transcripts (no GPU needed — pure string manipulation)
     texts: list[str] = []
-    for ex in tqdm(
-        dataset, total=len(dataset), desc="Generating tool-loop transcripts"
-    ):
-        text: str = _example_to_sft_text(
+    skipped: int = 0
+    for ex in tqdm(dataset, total=len(dataset), desc="Building gold transcripts"):
+        text: str | None = _example_to_gold_sft_text(
             ex,
-            model=model,
             tokenizer=tokenizer,
-            cfg=cfg,
-            tools=tools,
+            system_prompt=str(cfg.system_prompt),
         )
-        texts.append(text)
+        if text is not None:
+            texts.append(text)
+        else:
+            skipped += 1
 
+    print(f"Gold transcripts: {len(texts)} built, {skipped} skipped.")
     dataset_with_text: Dataset = Dataset.from_dict({"text": texts})
 
     sft_args: SFTConfig = SFTConfig(

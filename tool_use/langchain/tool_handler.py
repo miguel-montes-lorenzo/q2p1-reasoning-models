@@ -989,6 +989,39 @@ def parse_and_execute_tool_call(
             parsed_answer_only2,
         )
 
+    # --- FIX: Strip premature answers ---
+    # If the model produced BOTH tool calls AND an <answer> in the same
+    # iteration, it means the model answered before seeing the tool results.
+    # Ignore the answer and force continuation so the model reads the
+    # <tools> block first and answers in the next iteration.
+    if parsed.answer is not None and len(parsed.tool_calls) > 0:
+        resolved_records_premature: list[dict[str, Any]] = []
+        for rec in tool_records:
+            raw_args_p: dict[str, str] = dict(rec["args"])
+            resolved_args_p: dict[str, str] = {}
+            for k, v in raw_args_p.items():
+                resolved_args_p[k] = _format_ids_strict(text=v, outputs=outputs_all)
+            resolved_records_premature.append({
+                "id": rec["id"],
+                "tool": rec["tool"],
+                "args": resolved_args_p,
+                "output": rec["output"],
+                "successful_execution": rec["successful_execution"],
+            })
+
+        tools_block_premature: str = _render_tools_block(
+            records=resolved_records_premature
+        )
+        prompt_premature: str = f"{think_block}\n{tools_block_premature}\n"
+        raw_premature: str = f"{think_block}\n{tools_block}"
+        return (
+            True,
+            prompt_premature,
+            raw_premature,
+            raw_premature,
+            "<answer>null</answer>",
+        )
+
     if parsed.answer is not None:
         for m in _ID_REF_RE.finditer(parsed.answer):
             ref_id: str = str(m.group(1))
