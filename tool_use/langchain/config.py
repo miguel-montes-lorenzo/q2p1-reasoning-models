@@ -407,8 +407,28 @@ REACT_SYSTEM_PROMPT: str = (
     "  3. Use the calculator for any arithmetic\n"
     "  4. Combine results and give the final answer\n"
     "\n"
-    "IMPORTANT: Call ONE or TWO tools per <think> block, then STOP and wait for results.\n"
-    "Do NOT try to do everything in a single <think>.\n"
+    "STEP DECOMPOSITION STRATEGY:\n"
+    "When the user asks a multi-part question (e.g. 'How to make X and how many calories?'):\n"
+    "  Step A: Search for the recipe with @knowledge_base_search.\n"
+    "  Step B: Read the recipe, identify key ingredients.\n"
+    "  Step C: For EACH ingredient, search nutrition with @food_data_central_search (one or two per <think>).\n"
+    "  Step D: Use @calculator to compute totals.\n"
+    "  Step E: Write the final <answer> combining recipe + nutrition.\n"
+    "Never skip steps. Never guess nutrition data.\n"
+    "\n"
+    "CRITICAL: Call at most ONE or TWO tools per <think> block, then STOP and wait for <tools> results.\n"
+    "Do NOT try to do everything in a single <think>. You MUST wait for each tool's output\n"
+    "before using it in the next tool call. NEVER guess or invent a tool's output.\n"
+    "\n"
+    "BAD example (do NOT do this):\n"
+    "  <think>@food_data_central_search(query=\"flour\")->1. Flour has 361 kcal. @calculator(expression=\"361*2.4\")->2.</think>\n"
+    "This is WRONG because you used the food data result BEFORE receiving it.\n"
+    "\n"
+    "GOOD example:\n"
+    "  <think>I need flour calories. @food_data_central_search(query=\"flour\")->1.</think>\n"
+    "  (wait for <tools>)\n"
+    "  <think>Flour: 361 kcal/100g. Now calculate: @calculator(expression=\"361*2.4\")->2.</think>\n"
+    "\n"
     "Your <answer> must be DETAILED and COMPLETE — include all data you gathered.\n"
     "\n"
     "---\n"
@@ -500,6 +520,28 @@ REACT_SYSTEM_PROMPT: str = (
     "- 1 cup berries (150g): 85.5 kcal</answer>\n"
 )
 
+
+REACT_NUDGE_PROMPT: str = (
+    "[SYSTEM] You are running low on iterations. "
+    "You have 2 steps left. Start wrapping up: if you have enough information, "
+    "produce your <answer> now. If you still need ONE more tool call, make it in this <think>, "
+    "then answer immediately in the next step."
+)
+
+REACT_FORCE_ANSWER_PROMPT: str = (
+    "[SYSTEM] This is your LAST iteration. You MUST produce an <answer>...</answer> now. "
+    "Use the information you have gathered so far. Summarize all tool outputs into a "
+    "complete answer. Do NOT call any more tools. Write <think>brief summary</think> "
+    "then <answer>your complete answer</answer>."
+)
+
+REACT_STALE_PROMPT: str = (
+    "[SYSTEM] You appear to be stuck — the last 3 iterations made no new progress "
+    "(repeated errors or no new tool calls). You MUST change your approach NOW. "
+    "Either: (a) fix the format error using the exact syntax @tool_name(arg=\"value\")->ID, "
+    "or (b) produce an <answer> with whatever information you have collected so far. "
+    "Do NOT repeat the same failing action."
+)
 
 USE_4_BIT: bool = True
 MAX_SEQ_LEN: int = 1024
@@ -658,7 +700,7 @@ class REACT_INFERENCE_CONFIG:
     system_prompt: str = f"{SYSTEM_PROMPT}{TOOL_SYSTEM_PROMPT}{REACT_SYSTEM_PROMPT}{SYSTEM_PROMPT_END}"
 
     do_sample: bool = True
-    max_new_tokens: int = MAX_NEW_TOKENS
+    max_new_tokens: int = 1536
     temperature: float | None = TEMPERATURE if do_sample else None
     top_p: float | None = TOP_P if do_sample else None
 

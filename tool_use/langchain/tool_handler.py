@@ -837,7 +837,11 @@ def parse_and_execute_tool_call(
             return _return_error_continue(
                 think_block=think_block,
                 tools_block=None,
-                error_message=_ERR_INCORRECT_AT_USE,
+                error_message=(
+                    f"ID {c.tool_id} was already used in a previous iteration. "
+                    f"Every tool call must have a unique ID. "
+                    f"Use a new ID like ->{int(c.tool_id) + 10 if c.tool_id.isdigit() else c.tool_id + '_2'}"
+                ),
             )
 
     topo: list[ToolCall] | None = _toposort_tools(calls=parsed.tool_calls)

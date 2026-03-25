@@ -5,7 +5,7 @@ from typing import Any
 import torch
 from langchain_core.tools import BaseTool
 
-from tool_use.langchain.tool_inference import run_tool_use_inference
+from tool_use.langchain.tool_inference import run_react_inference
 
 
 class ReActAgent:
@@ -17,13 +17,14 @@ class ReActAgent:
       3. Observation: system executes tools, returns <tools>...</tools>
       4. Repeat until the model produces <answer>...</answer>
 
-    This reuses the existing tool-use inference loop which already implements
-    this exact cycle with the <think>/<tools>/<answer> XML tag protocol.
+    This uses the dedicated ``run_react_inference`` loop which adds stale
+    detection, forced finalization, message compression, and error escalation
+    on top of the basic tool-use cycle.
 
     Args:
         model: Loaded HuggingFace causal LM (base + LoRA).
         tokenizer: Corresponding HuggingFace tokenizer.
-        cfg: Tool-use inference config with system_prompt and generation params.
+        cfg: REACT_INFERENCE_CONFIG with system_prompt and generation params.
         tools: List of LangChain tools (calculator, knowledge_base_search, etc.).
     """
 
@@ -49,25 +50,29 @@ class ReActAgent:
         Returns:
             Dict with keys:
               - response: The final answer string.
-              - trace: List of step dicts for the UI.
+              - trace: List of step dicts with {"step", "type", "content"}.
               - details: Metadata about the run.
         """
-        full_output, parsed_answer, step_contents = run_tool_use_inference(
+        trace: list[dict[str, Any]] = run_react_inference(
             question=question,
             model=self._model,
             tokenizer=self._tokenizer,
             cfg=self._cfg,
             tools=self._tools,
-            formatted_references=True,
         )
 
-        trace: list[dict[str, Any]] = [
-            {"step": i, "content": content}
-            for i, content in enumerate(step_contents)
-        ]
+        # Extract final answer from the last trace entry
+        final_answer: str = "<answer>null</answer>"
+        for entry in reversed(trace):
+            if entry.get("type") == "final_answer":
+                final_answer = str(entry["content"])
+                break
 
         return {
-            "response": parsed_answer,
+            "response": final_answer,
             "trace": trace,
-            "details": {"stage": "react_agent", "num_steps": len(step_contents)},
+            "details": {
+                "stage": "react_agent",
+                "num_steps": len(trace),
+            },
         }
